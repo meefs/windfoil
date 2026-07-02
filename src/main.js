@@ -6,9 +6,33 @@
 
 import { loadFont } from "./font.js";
 import { buildGlyphAtlas } from "./bands.js";
-import { layoutLine, measureText } from "./layout.js";
+import { layoutStack } from "./layout.js";
 import { renderToRGBA } from "./gpu.js";
 import { encodePNG } from "./png.js";
+
+// --style <name>: an opt-in perceptual coverage curve (gamma = stem weight <1 bolder / >1 thinner; sharp =
+// edge contrast >1 crisper / <1 softer). "exact" is the default identity and writes the unsuffixed file;
+// every other style writes output/area-coverage-<style>.png.
+const STYLES = {
+  exact: [1.0, 1.0],
+  sharp: [1.15, 2.2],
+  crisp: [1.05, 1.6],
+  strong: [0.72, 1.1],
+  smooth: [1.0, 0.7],
+};
+function argValue(name) {
+  const i = Deno.args.indexOf(`--${name}`);
+  if (i >= 0 && i + 1 < Deno.args.length) return Deno.args[i + 1];
+  const eq = Deno.args.find((a) => a.startsWith(`--${name}=`));
+  return eq ? eq.slice(name.length + 3) : null;
+}
+const styleName = argValue("style") ?? "exact";
+if (!(styleName in STYLES)) {
+  console.error(`unknown --style "${styleName}"; choose one of: ${Object.keys(STYLES).join(", ")}`);
+  Deno.exit(1);
+}
+const style = STYLES[styleName];
+const suffix = styleName === "exact" ? "" : `-${styleName}`;
 
 const TEXT = "area coverage";
 const INK = [0.11, 0.11, 0.17, 1]; // near-black ink
@@ -31,32 +55,21 @@ const font = await loadFont(
 const { curves, rows, table, stats } = buildGlyphAtlas(font, TEXT);
 
 // Lay out one row per size, left-aligned, stacked with spacing proportional to each size so the rhythm
-// scales with the geometric ladder (the gaps grow at the same ratio as the type).
-const instances = [];
-let maxWidth = 0;
-let y = MARGIN;
-for (const size of sizes) {
-  const inkAbove = 0.56 * size; // x-height headroom above the baseline
-  const inkBelow = 0.28 * size; // descender depth ('g')
-  const gap = 0.34 * size; // space to the next row
-  const baselineY = y + inkAbove;
-  layoutLine(instances, TEXT, table, font, {
-    x: MARGIN,
-    baselineY,
-    fontSizePx: size,
-    color: INK,
-  });
-  maxWidth = Math.max(maxWidth, measureText(TEXT, font, size));
-  y = baselineY + inkBelow + gap;
-}
-const width = Math.ceil(maxWidth + MARGIN * 2);
-const height = Math.ceil(y - 0.34 * sizes.at(-1) + MARGIN); // drop the trailing gap, add the bottom margin
+// scales with the geometric ladder (the gaps grow at the same ratio as the type). Same TEXT every row.
+const { instances, bounds } = layoutStack(
+  sizes.map((size) => ({ text: TEXT, size })),
+  table,
+  font,
+  { x: MARGIN, top: MARGIN, color: INK },
+);
+const width = Math.ceil(bounds.maxX + MARGIN); // content box + the right/bottom margins
+const height = Math.ceil(bounds.maxY + MARGIN);
 
 const instanceData = new Float32Array(instances);
 const instanceCount = instanceData.length / 16;
 
 console.log(
-  `Rendering "${TEXT}" at ${sizes.length} sizes (${sizes[0]}–${MAX_SIZE}px) → ${width}×${height}`,
+  `Rendering "${TEXT}" [style: ${styleName}] at ${sizes.length} sizes (${sizes[0]}–${MAX_SIZE}px) → ${width}×${height}`,
 );
 const t0 = performance.now();
 const rgba = await renderToRGBA({
@@ -67,12 +80,13 @@ const rgba = await renderToRGBA({
   rows,
   instances: instanceData,
   instanceCount,
+  style,
 });
 const t1 = performance.now();
 
 const png = encodePNG(rgba, width, height);
 await Deno.mkdir(new URL("../output/", import.meta.url), { recursive: true });
-const outPath = new URL("../output/area-coverage.png", import.meta.url);
+const outPath = new URL(`../output/area-coverage${suffix}.png`, import.meta.url);
 await Deno.writeFile(outPath, png);
 
 console.log(

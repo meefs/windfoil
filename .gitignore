@@ -7,3 +7,4 @@ node_modules
 # Deno
 deno.lock
 output/
+.claude/

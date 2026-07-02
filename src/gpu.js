@@ -1,39 +1,55 @@
-// gpu.js — WebGPU plumbing: upload the atlas + instance buffers, run one instanced draw of the shader into
-// an offscreen texture, read the pixels back as RGBA8. Four bindings (target size, instances, curve atlas,
-// row table), so all glyphs of all sizes render in a single draw(4, instanceCount).
+// gpu.js — WebGPU plumbing for the area-coverage shader, shared by the offscreen PNG renderer and the
+// realtime web client. The core is one instanced draw of the glyph atlas under a camera (`createGlyphRenderer`);
+// `renderToRGBA` wraps it for a one-shot offscreen render + readback, while the web client draws it into a
+// canvas swapchain every frame with a moving camera. Four bindings (uniforms, instances, curve atlas, row
+// table), so all glyphs of all sizes render in a single draw(4, instanceCount).
 
 const WGSL_URL = new URL('./area.wgsl', import.meta.url);
 
+// Read the WGSL source in either environment: Deno reads it off disk, the browser fetches it (both resolve
+// relative to this module, so the client only needs to be served from the repo root).
+export async function loadShaderCode() {
+  if (typeof Deno !== 'undefined') return Deno.readTextFile(WGSL_URL);
+  return fetch(WGSL_URL).then((r) => r.text());
+}
+
+// Request a WebGPU device (throws with a helpful message if there's no adapter).
+export async function requestDevice() {
+  const adapter = await navigator.gpu?.requestAdapter();
+  if (!adapter) throw new Error('No WebGPU adapter — needs a GPU-capable host (Deno: run with --unstable-webgpu).');
+  const device = await adapter.requestDevice();
+  device.addEventListener?.('uncapturederror', (e) => console.error('WebGPU error:', e.error?.message));
+  return device;
+}
+
+function storage(device, floats) {
+  const buf = device.createBuffer({
+    size: floats.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(buf, 0, floats);
+  return buf;
+}
+
 /**
+ * Build the retained glyph renderer: the pipeline plus the uploaded atlas + instance buffers for one scene.
+ * The instances are static (the camera moves, not the geometry), so this is upload-once / draw-forever —
+ * `setUniforms` updates the target size + camera each frame and `draw` records the single instanced draw.
+ *
+ * @param {GPUDevice} device
  * @param {object} o
- * @param {number} o.width  @param {number} o.height
- * @param {number[]} o.background straight-alpha [r,g,b,a] in 0..1 (kept opaque so readback needs no unpremultiply)
+ * @param {string} o.code            the WGSL source (see `loadShaderCode`)
+ * @param {GPUTextureFormat} o.format the render target's format ('rgba8unorm' offscreen; the canvas preferred format live)
  * @param {Float32Array} o.curves    the deduped, band-duplicated curve atlas (3 vec2 per monotone piece)
  * @param {Uint32Array} o.rows       the row-band table ([start, count] per band)
  * @param {Float32Array} o.instances packed instance data (16 floats each)
  * @param {number} o.instanceCount
- * @returns {Promise<Uint8Array>} width*height*4 RGBA8, straight alpha
  */
-export async function renderToRGBA({ width, height, background, curves, rows, instances, instanceCount }) {
-  const adapter = await navigator.gpu?.requestAdapter();
-  if (!adapter) throw new Error('No WebGPU adapter — run Deno with --unstable-webgpu on a GPU-capable host.');
-  const device = await adapter.requestDevice();
-  device.addEventListener?.('uncapturederror', (e) => console.error('WebGPU error:', e.error?.message));
-
-  const format = 'rgba8unorm';
-  const code = await Deno.readTextFile(WGSL_URL);
+export function createGlyphRenderer(device, { code, format, curves, rows, instances, instanceCount }) {
   const module = device.createShaderModule({ code });
 
-  const target = device.createTexture({
-    size: [width, height],
-    format,
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-  });
-
-  // Uniforms: target size (vec2) padded to 16 bytes.
-  const uniform = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  device.queue.writeBuffer(uniform, 0, new Float32Array([width, height, 0, 0]));
-
+  // Uniforms: res (vec2) + style (gamma, sharp) + camera (scaleX, scaleY, transX, transY) + flags (vec4) = 12 floats.
+  const uniform = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const curveBuf = storage(device, curves);
   const rowBuf = storage(device, rows);
   const instBuf = storage(device, instances);
@@ -68,6 +84,54 @@ export async function renderToRGBA({ width, height, background, curves, rows, in
     ],
   });
 
+  return {
+    // Update the per-frame uniforms. `cam` is [scaleX, scaleY, transX, transY] (identity by default, so the
+    // offscreen path passes only width/height/style). `mode` is the fragment view: 0 = fill, 1 = analytic
+    // normal map (flags.x in the shader).
+    setUniforms({ width, height, style = [1, 1], cam = [1, 1, 0, 0], mode = 0 }) {
+      device.queue.writeBuffer(
+        uniform,
+        0,
+        // res, style, cam, then flags (x = view mode; yzw reserved)
+        new Float32Array([width, height, style[0], style[1], cam[0], cam[1], cam[2], cam[3], mode, 0, 0, 0]),
+      );
+    },
+    // Record the one instanced draw for every glyph into an open render pass.
+    draw(pass) {
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(4, instanceCount);
+    },
+  };
+}
+
+/**
+ * One-shot offscreen render → RGBA8 readback (the PNG path). Renders the scene with an identity camera into a
+ * texture the size of the layout, then copies it back to straight-alpha RGBA8. Uses the same pipeline + shader
+ * as the live client via `createGlyphRenderer`.
+ *
+ * @param {object} o
+ * @param {number} o.width  @param {number} o.height
+ * @param {number[]} o.background straight-alpha [r,g,b,a] in 0..1 (kept opaque so readback needs no unpremultiply)
+ * @param {Float32Array} o.curves    @param {Uint32Array} o.rows    @param {Float32Array} o.instances
+ * @param {number} o.instanceCount
+ * @param {[number, number]} [o.style] coverage-style (gamma, sharp); [1, 1] = exact (identity)
+ * @returns {Promise<Uint8Array>} width*height*4 RGBA8, straight alpha
+ */
+export async function renderToRGBA({ width, height, background, curves, rows, instances, instanceCount, style = [1, 1] }) {
+  const device = await requestDevice();
+  const format = 'rgba8unorm';
+  const code = await loadShaderCode();
+
+  const target = device.createTexture({
+    size: [width, height],
+    format,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+  });
+
+  const renderer = createGlyphRenderer(device, { code, format, curves, rows, instances, instanceCount });
+  renderer.setUniforms({ width, height, style }); // identity camera → device px === layout px
+
   const [br, bg, bb, ba = 1] = background;
   const encoder = device.createCommandEncoder();
   const pass = encoder.beginRenderPass({
@@ -81,9 +145,7 @@ export async function renderToRGBA({ width, height, background, curves, rows, in
       },
     ],
   });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bindGroup);
-  pass.draw(4, instanceCount); // one instanced draw call for every glyph
+  renderer.draw(pass);
   pass.end();
 
   // Copy the texture into a readback buffer (rows padded to 256 bytes, per WebGPU rules) and de-pad.
@@ -103,13 +165,4 @@ export async function renderToRGBA({ width, height, background, curves, rows, in
   }
   readback.unmap();
   return rgba;
-}
-
-function storage(device, floats) {
-  const buf = device.createBuffer({
-    size: floats.byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(buf, 0, floats);
-  return buf;
 }

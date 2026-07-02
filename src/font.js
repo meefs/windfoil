@@ -5,9 +5,16 @@
 
 import opentype from 'opentype.js';
 
+// Parse a font from an in-memory ArrayBuffer. Environment-agnostic — the browser client fetches the bytes and
+// calls this; Deno reads them off disk via `loadFont`.
+export function parseFont(buffer) {
+  return opentype.parse(buffer);
+}
+
+// Deno convenience: read a .ttf off disk and parse it.
 export async function loadFont(url) {
   const bytes = await Deno.readFile(url);
-  return opentype.parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  return parseFont(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 }
 
 // A cubic → two quadratics (only reached if the font carries cubic outlines; TrueType does not).

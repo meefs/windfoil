@@ -6,8 +6,10 @@
 // into row bands (see bands.js); each instance points at its glyph's bands via the row table below.
 
 struct Uniforms {
-  res : vec2<f32>,  // render-target size in pixels
-  _pad : vec2<f32>,
+  res : vec2<f32>,    // render-target size in pixels
+  style : vec2<f32>,  // (gamma, sharp) coverage-style transform; (1, 1) = exact (identity). See main.js --style.
+  cam : vec4<f32>,    // camera: device px = worldPx·(scaleX, scaleY) + (transX, transY). (1,1,0,0) = identity.
+  flags : vec4<f32>,  // x = view mode (0 = fill, 1 = analytic normal map); yzw reserved. Default 0.
 };
 
 struct Instance {
@@ -17,7 +19,14 @@ struct Instance {
   band  : vec4<f32>, // rowBase, bandCount, y0, invH  (the glyph's row-band table + its y-origin / bands-per-unit)
 };
 
-const SORT_MIN : u32 = 8u; // bands longer than this are x-sorted on the CPU, so we can break here; matches bands.js
+// Bands with count > SORT_MIN are x-sorted on the CPU (by hull x-max, descending), so once we reach a piece
+// fully left of the box every remaining piece is too and we can break. MUST equal BAND_SORT_MIN in bands.js —
+// see the tuning note there (8 = the median band occupancy for the Lato glyph set).
+const SORT_MIN : u32 = 8u;
+
+// Normal-map debug view (U.flags.x = 1): how hard the normal tilts at a full edge (bigger = steeper). The rim
+// is always ~1 device px (the pixel footprint), and the normal is computed in the SAME gather as the coverage.
+const NORMAL_TILT : f32 = 1.5;
 
 @group(0) @binding(0) var<uniform> U : Uniforms;
 @group(0) @binding(1) var<storage, read> instances : array<Instance>;
@@ -36,14 +45,17 @@ struct VsOut {
 fn vs(@builtin(vertex_index) vi : u32, @builtin(instance_index) ii : u32) -> VsOut {
   let I = instances[ii];
   let unitsToPx = I.place.z;                          // device pixels per glyph coordinate unit
-  // Pad the quad outward by ~2 device px so an edge's anti-aliased skirt is never clipped.
-  let pad = 2.0 / unitsToPx;
+  let camScale = U.cam.xy;                            // world→device px scale (camera zoom); (1,1) = identity
+  // Pad the quad outward by ~2 device px so an edge's anti-aliased skirt is never clipped. The pad is in
+  // glyph units, so divide by the ON-SCREEN scale (unitsToPx·camScale) to keep it ~2 device px at any zoom.
+  let pad = 2.0 / (unitsToPx * max(camScale.x, 1e-6));
   let lo = I.bbox.xy - vec2<f32>(pad);
   let hi = I.bbox.zw + vec2<f32>(pad);
   // Unit-quad corners for a triangle-strip: (0,0) (1,0) (0,1) (1,1).
   let uv = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
   let em = mix(lo, hi, uv);
-  let devicePx = I.place.xy + em * unitsToPx;         // Y-down device pixels
+  let worldPx = I.place.xy + em * unitsToPx;          // Y-down "world" pixels (the layout space)
+  let devicePx = worldPx * camScale + U.cam.zw;       // apply the camera (pan + zoom) → device px
   let clip = vec2<f32>(devicePx.x / U.res.x * 2.0 - 1.0, 1.0 - devicePx.y / U.res.y * 2.0);
   var o : VsOut;
   o.pos = vec4<f32>(clip, 0.0, 1.0);
@@ -57,6 +69,22 @@ fn vs(@builtin(vertex_index) vi : u32, @builtin(instance_index) ii : u32) -> VsO
 fn tri_wave(t : f32) -> f32 {
   let m = t - 2.0 * floor(t * 0.5);
   return 1.0 - abs(1.0 - m);
+}
+
+// Optional perceptual styling of the final coverage (--style presets in main.js): a post-fold transfer curve
+// on the EXACT coverage. `gamma` re-weights stems (<1 bolder/darker, >1 thinner); `sharp` sets the edge
+// contrast about 0.5 (>1 crisper, <1 softer). (1, 1) is the identity, so the default "exact" path is bit-for-
+// bit untouched. This departs from the true box filter by design — opt-in tuning, not the reference.
+fn style_coverage(cov : f32, gamma : f32, sharp : f32) -> f32 {
+  if (gamma == 1.0 && sharp == 1.0) { return cov; } // exact: reference path, untouched
+  let g = pow(cov, gamma);
+  var s : f32;
+  if (g < 0.5) {
+    s = 0.5 * pow(2.0 * g, sharp);
+  } else {
+    s = 1.0 - 0.5 * pow(2.0 * (1.0 - g), sharp);
+  }
+  return clamp(s, 0.0, 1.0);
 }
 
 // Solve the monotone quadratic component A2·t² + A1·t + A0 = v on [0,1]. `e0`/`e1` are the component's
@@ -99,17 +127,31 @@ fn area_inside(a2 : vec2<f32>, a1 : vec2<f32>, q1 : vec2<f32>, ta : f32, tb : f3
   return 2.0 * d * x_mid * yp + (2.0 * d * d * d / 3.0) * (a2.x * yp + 2.0 * a2.y * xp);
 }
 
+// A face gather's two outputs, accumulated together in one pass over the pieces:
+//   f_int — the winding integral ∫∫_box w  (→ coverage)
+//   grad  — the outline normal ∫_{curve∩box} n ds  (arc-length-weighted; the analytic normal)
+// By Stokes ∇∫∫_box w = ∫_{curve∩box} n ds, and for a quadratic piece n·ds = (y'(t), −x'(t)) dt, so the normal
+// contribution of a piece is just its in-box sub-curve's chord, ROTATED. It falls out of the SAME zone solve
+// the area needs, so the normal costs only a few extra ALU — and a pure coverage method (Slug/MSDF) can't hand
+// you it. It rides a `want_grad` flag threaded through the gather (a uniform branch), so the fill path skips it
+// outright rather than trusting the compiler to dead-code the unused .grad away.
+struct Face {
+  f_int : f32,
+  grad : vec2<f32>,
+};
+
 // One xy-monotone piece's contribution to ∫∫_box w over the rc-relative y-window [lo, hi] (already
 // intersected with the piece's y-span), box half-width hx. The winding integral integrates out x as
 // clamp(x(t), −hx, hx) + hx, splitting the crossing t-interval into LEFT (0) / INSIDE (exact) / RIGHT
 // (full box width) zones at the two x-edge crossings — in a statically known order set by the x direction.
-fn area_piece(q1 : vec2<f32>, q2 : vec2<f32>, q3 : vec2<f32>, lo : f32, hi : f32, hx : f32) -> f32 {
+// The outline normal (only when want_grad) is the INSIDE zone's rotated chord (endpoints already solved).
+fn area_piece(q1 : vec2<f32>, q2 : vec2<f32>, q3 : vec2<f32>, lo : f32, hi : f32, hx : f32, want_grad : bool) -> Face {
   let a2 = q1 - 2.0 * q2 + q3;
   let a1 = 2.0 * (q2 - q1);
   let y_rising = q3.y >= q1.y;
   let t_lo = mono_root(a2.y, a1.y, q1.y, q1.y, q3.y, select(hi, lo, y_rising), y_rising);
   let t_hi = mono_root(a2.y, a1.y, q1.y, q1.y, q3.y, select(lo, hi, y_rising), y_rising);
-  if (t_hi <= t_lo) { return 0.0; }
+  if (t_hi <= t_lo) { return Face(0.0, vec2<f32>(0.0)); }
   let x_rising = q3.x >= q1.x;
   let t_left = clamp(mono_root(a2.x, a1.x, q1.x, q1.x, q3.x, -hx, x_rising), t_lo, t_hi);
   let t_right = clamp(mono_root(a2.x, a1.x, q1.x, q1.x, q3.x, hx, x_rising), t_lo, t_hi);
@@ -124,15 +166,24 @@ fn area_piece(q1 : vec2<f32>, q2 : vec2<f32>, q3 : vec2<f32>, lo : f32, hi : f32
     let tm = 0.5 * (ra + rb);
     acc += (rb - ra) * (2.0 * a2.y * tm + a1.y) * (2.0 * hx);
   }
-  return acc;
+  // Outline normal: ∫ n ds over the INSIDE sub-curve [t1,t2] = its chord rotated (Δy, −Δx). Gated so the fill
+  // path pays nothing for it (want_grad is a uniform, so this branch never diverges).
+  var grad = vec2<f32>(0.0);
+  if (want_grad) {
+    let p1 = (a2 * t1 + a1) * t1 + q1;
+    let p2 = (a2 * t2 + a1) * t2 + q1;
+    grad = vec2<f32>(p2.y - p1.y, p1.x - p2.x);
+  }
+  return Face(acc, grad);
 }
 
 // Accumulate one ROW BAND's pieces over the rc-relative y-window [wlo, whi] (the pixel box clipped to this
 // band's y-range). Extent tests are endpoint-exact for monotone pieces: a piece fully left of the box adds
 // 0, one fully right adds full box width × its signed clipped y-span. Long bands are x-sorted, so we break
 // at the first fully-left piece; short bands run the plain loop.
-fn area_accum(start : u32, count : u32, rc : vec2<f32>, wlo : f32, whi : f32, sx : f32) -> f32 {
+fn area_accum(start : u32, count : u32, rc : vec2<f32>, wlo : f32, whi : f32, sx : f32, want_grad : bool) -> Face {
   var acc : f32 = 0.0;
+  var g = vec2<f32>(0.0);                                 // outline normal (only straddling pieces contribute)
   let hx = sx * 0.5;
   let sorted = count > SORT_MIN;
   // a piece whose whole hull spans no more than a few coordinate-ULPs is f32-degenerate (see below)
@@ -143,7 +194,7 @@ fn area_accum(start : u32, count : u32, rc : vec2<f32>, wlo : f32, whi : f32, sx
     let q2 = curves[base + 1u] - rc;
     let q3 = curves[base + 2u] - rc;
     let x_hull_max = max(q1.x, max(q2.x, q3.x));
-    if (x_hull_max <= -hx) {                              // fully LEFT of the box → no area
+    if (x_hull_max <= -hx) {                              // fully LEFT of the box → no area, no boundary
       if (sorted) { break; }                             // every remaining piece is further left
       continue;
     }
@@ -152,9 +203,9 @@ fn area_accum(start : u32, count : u32, rc : vec2<f32>, wlo : f32, whi : f32, sx
     if (hi <= lo) { continue; }
     let x_hull_min = min(q1.x, min(q2.x, q3.x));
     if (x_hull_min >= hx) {
-      // fully RIGHT of the box → winding only. As a difference of clamped endpoints (not sign·overlap) so it
-      // telescopes over piece chains: shared endpoints cancel exactly, so a run of ULP-scale segments sums
-      // to its span rather than accumulating per-piece rounding.
+      // fully RIGHT of the box → winding only (boundary outside the box, so no normal). As a difference of
+      // clamped endpoints (not sign·overlap) so it telescopes over piece chains: shared endpoints cancel
+      // exactly, so a run of ULP-scale segments sums to its span rather than accumulating per-piece rounding.
       acc += sx * (clamp(q3.y, wlo, whi) - clamp(q1.y, wlo, whi));
       continue;
     }
@@ -166,16 +217,18 @@ fn area_accum(start : u32, count : u32, rc : vec2<f32>, wlo : f32, whi : f32, sx
       acc += xm * (clamp(q3.y, wlo, whi) - clamp(q1.y, wlo, whi));
       continue;
     }
-    acc += area_piece(q1, q2, q3, lo, hi, hx);
+    let r = area_piece(q1, q2, q3, lo, hi, hx, want_grad);
+    acc += r.f_int;
+    g += r.grad;
   }
-  return acc;
+  return Face(acc, g);
 }
 
 // One glyph's winding integral over the pixel box (rc ± s/2), gathered through its ROW BANDS. The pixel's
 // y-slab selects the band range it touches; each band is read clipped to its own y-range. The bands tile
 // the slab, so a piece duplicated across adjacent bands integrates over disjoint windows and the sum is
 // exact without a dedupe test.
-fn area_of_face(I : Instance, rc : vec2<f32>, s : vec2<f32>) -> f32 {
+fn area_of_face(I : Instance, rc : vec2<f32>, s : vec2<f32>, want_grad : bool) -> Face {
   let rowBase = u32(I.band.x);
   let R = u32(I.band.y);
   let invH = I.band.w;
@@ -195,6 +248,7 @@ fn area_of_face(I : Instance, rc : vec2<f32>, s : vec2<f32>) -> f32 {
     ri1 = u32(clamp(floor((-dy0 + sy2) * invH), 0.0, f32(R) - 1.0));
   }
   var f_int : f32 = 0.0;
+  var g = vec2<f32>(0.0);
   for (var ri = ri0; ri <= ri1; ri = ri + 1u) {
     var w_lo = -sy2;             // rc-relative window edges — stable at any zoom
     var w_hi = sy2;
@@ -204,9 +258,11 @@ fn area_of_face(I : Instance, rc : vec2<f32>, s : vec2<f32>) -> f32 {
     }
     if (w_hi <= w_lo) { continue; }
     let rIdx = (rowBase + ri) * 2u;
-    f_int += area_accum(rows[rIdx], rows[rIdx + 1u], rc, w_lo, w_hi, s.x);
+    let r = area_accum(rows[rIdx], rows[rIdx + 1u], rc, w_lo, w_hi, s.x, want_grad);
+    f_int += r.f_int;
+    g += r.grad;
   }
-  return f_int;
+  return Face(f_int, g);
 }
 
 @fragment
@@ -222,14 +278,30 @@ fn fs(in : VsOut) -> @location(0) vec4<f32> {
     ),
     vec2<f32>(1e-9),
   );
-  let f_int = area_of_face(I, rc, s);
-  let f_cov = f_int / max(s.x * s.y, 1e-30);
+  // One gather → coverage, and (only when the normal view asks) the analytic outline normal in the same pass.
+  // want_grad is gated all the way down, so the fill path never computes the gradient — no compiler faith.
+  let want_normal = U.flags.x > 0.5;
+  let F = area_of_face(I, rc, s, want_normal);
+  let f_cov = F.f_int / max(s.x * s.y, 1e-30);
+
+  // Mode 1 — normal map: the coverage gradient IS the outline normal. `slope` is ~O(1) at a full edge; fold it
+  // into a tangent-space normal (flat interior/exterior → +Z, a ~1px rim tilting toward the outline normal),
+  // masked to the glyph body + its rim so it reads on the bg. Same gather as the fill → same cost.
+  if (want_normal) {
+    let slope = F.grad / max(0.5 * (s.x + s.y), 1e-9);
+    let nrm = normalize(vec3<f32>(NORMAL_TILT * slope.x, -NORMAL_TILT * slope.y, 1.0)); // +Y-up convention
+    let body = select(clamp(abs(f_cov), 0.0, 1.0), clamp(tri_wave(f_cov), 0.0, 1.0), I.place.w > 0.5);
+    let a = max(body, clamp(length(slope), 0.0, 1.0));           // glyph fill OR the edge rim
+    return vec4<f32>((nrm * 0.5 + vec3<f32>(0.5)) * a, a);       // premultiplied sRGB-style normal
+  }
+
   var cov : f32;
   if (I.place.w > 0.5) {
     cov = clamp(tri_wave(f_cov), 0.0, 1.0);   // even-odd
   } else {
     cov = clamp(abs(f_cov), 0.0, 1.0);        // nonzero (saturating winding integral)
   }
+  cov = style_coverage(cov, U.style.x, U.style.y);  // opt-in --style tuning; (1,1) exact ⇒ identity
   let a = I.color.a * cov;
   return vec4<f32>(I.color.rgb * a, a);       // premultiplied — pipeline blends premultiplied-over
 }

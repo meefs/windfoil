@@ -15,7 +15,13 @@ Requires [Deno](https://deno.com/) 2.x on a machine with a WebGPU-capable GPU.
 ```sh
 deno task render     # → output/area-coverage.png
 deno task validate   # compare coverage vs a point-sampled box filter and Skia
+deno task serve      # serve the repo, then open http://localhost:8080/demo/
 ```
+
+`deno task serve` runs the interactive **web demo** ([`demo/`](demo/)): ~128 lines of lorem ipsum, each bigger
+than the last, rendered to a WebGPU canvas in one instanced draw and re-anti-aliased per pixel as you pan and
+pinch/zoom from 0.05× to 3000×. It shares the same atlas, layout, shader and GPU pipeline as the offscreen
+renderer — only the camera, input, and canvas swapchain are browser-specific.
 
 ## What's here
 
