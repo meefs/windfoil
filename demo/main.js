@@ -302,24 +302,21 @@ async function main() {
   const [br, bg, bb, ba] = BG;
 
   // One continuous rAF loop, and the ONLY place anything is drawn — input handlers just move the camera, they
-  // never render. We cap the render rate at ~60fps: iOS holds ProMotion displays at 60Hz when idle but ramps
-  // them to 120Hz *during touch*, so an unthrottled loop renders up to 120×/s while you pan. The gate below
-  // drops the extra ticks back to ~60 (that "over 60" reading was the display, not a double render).
-  const TARGET_FPS = 60;
-  const FRAME_MS = 1000 / TARGET_FPS; // ~16.67ms
-  const RENDER_GATE = FRAME_MS - 2; // a little slack so a 60Hz vsync isn't skipped by jitter; still caps ≤60
-  let fps = 0;
+  // never render. We render on every vsync (no throttle): iOS holds ProMotion at 60Hz when idle but ramps to
+  // 120Hz *during touch*, and matching that is what keeps panning smooth. An earlier 60fps cap skipped frames,
+  // which made the surviving ProMotion frames land at uneven intervals — that was the pan "jitter". (The >60
+  // reading was always just the display's refresh rate, never a double render: draw happens once, right here.)
+  const FRAME_MS = 1000 / 60; // ~16.67ms — reference interval for the momentum decay and the fps-meter seed
+  let fpsDt = FRAME_MS; // EMA of the interval between rendered frames; we average the interval THEN invert it
+  //                       (not an EMA of 1000/dt, which Jensen-biases the readout above the true frame rate).
   let prevTs = 0;
-  let lastRender = -Infinity;
   function frame(now) {
     requestAnimationFrame(frame);
-    if (now - lastRender < RENDER_GATE) return; // over the 60fps budget → skip this tick, don't render
-    lastRender = now;
 
-    // FPS as an exponential moving average of the (rendered) inter-frame interval.
-    const dt = prevTs ? now - prevTs : 0;
+    const dt = prevTs ? now - prevTs : FRAME_MS;
     prevTs = now;
-    if (dt > 0) fps = fps ? fps * 0.9 + (1000 / dt) * 0.1 : 1000 / dt;
+    fpsDt = fpsDt * 0.9 + dt * 0.1;
+    const fps = Math.round(1000 / fpsDt); // honest average — reads ~120 mid-touch on ProMotion, ~60 idle
 
     // Kinetic panning: after a flick, keep gliding and ease to a stop. The decay is per-ms so it feels the
     // same regardless of frame interval; below a hair of a pixel per frame we snap to rest.
@@ -352,7 +349,7 @@ async function main() {
     pass.end();
     device.queue.submit([encoder.finish()]);
 
-    fpsEl.textContent = `${fps.toFixed(0)} fps • ${fmtZoom(zoomLevel())}x`;
+    fpsEl.textContent = `${fps} fps • ${fmtZoom(zoomLevel())}x`;
   }
   requestAnimationFrame(frame);
 }
