@@ -10,7 +10,15 @@
 import { pushMonotonePieces } from './geometry.js';
 import { glyphQuads } from './font.js';
 
-const TARGET_PER_BAND = 6; // aim for ~this many pieces per band (before y-overlap duplication inflates it)
+// Aim for ~this many pieces per band (before y-overlap duplication inflates it). Coarser than you'd expect for
+// a gather because the per-fragment cost of an extra piece is nearly free here: a piece fully left of the pixel
+// ends the scan (early break), and one fully right adds a clamp/subtract with no root solve — so a longer band
+// mostly adds cheap compares, while FEWER bands means a pixel's y-footprint spans fewer of them (fewer band
+// setups) and each piece duplicates into fewer bands (smaller atlas). Raised from 6 → 10 after benchmarking
+// (bench/): ~8–19% faster at small/medium sizes (where windfoil is fill-heavy and it matters most) with no
+// regression at large sizes and a ~15% smaller atlas. Tuning is windfoil-specific — a dual-ray method (Slug)
+// wants finer bands, since it root-solves every curve in the band with no cheap far path.
+const TARGET_PER_BAND = 10;
 const MAX_BANDS = 64;
 // Bands with MORE than this many pieces are x-sorted (by hull x-max, descending) so the shader can stop at the
 // first piece fully left of the pixel; shorter bands stay in curve order and take the plain linear scan.
@@ -21,9 +29,9 @@ const MAX_BANDS = 64;
 // only the heavier tail (~40% of bands, where the linear scan wastes the most) pays for the sort + early break.
 export const BAND_SORT_MIN = 8;
 
-function chooseBands(pieceCount) {
-  if (pieceCount <= TARGET_PER_BAND) return 1;
-  return Math.min(Math.ceil(pieceCount / TARGET_PER_BAND), MAX_BANDS);
+function chooseBands(pieceCount, targetPerBand) {
+  if (pieceCount <= targetPerBand) return 1;
+  return Math.min(Math.ceil(pieceCount / targetPerBand), MAX_BANDS);
 }
 
 // The band index a y-value maps to: floor((y − y0)·invH) clamped to [0, R−1] (invH = 0 ⇒ the single band 0).
@@ -37,9 +45,9 @@ function bandIndex(y, y0, invH, R) {
  * band-duplicated pieces to `curveOut` and each band's [start, count] to `rowOut`. Returns the band header
  * { rowBase, bandCount, y0, invH } the shader reads (rowBase in [start,count]-pair units).
  */
-export function bandPieces(pieces, y0, y1, curveOut, rowOut) {
+export function bandPieces(pieces, y0, y1, curveOut, rowOut, targetPerBand = TARGET_PER_BAND) {
   const n = pieces.length / 6;
-  const R = chooseBands(n);
+  const R = chooseBands(n, targetPerBand);
   const invH = R > 1 && y1 > y0 ? R / (y1 - y0) : 0;
 
   const buckets = Array.from({ length: R }, () => []);
