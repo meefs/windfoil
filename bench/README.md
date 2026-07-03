@@ -153,6 +153,25 @@ Coarser bands cost windfoil almost nothing per extra piece (early-break + clamp/
 while a footprint spans fewer of them — measured **~8–19% faster at small/medium sizes** with no large-size
 regression and a ~15% smaller atlas, coverage bit-identical (`deno task validate` unchanged). It's
 windfoil-specific, so the benchmark pins Slug's own bands at 6 (via `bandPieces`'s new optional argument) to keep
-the comparison fair. Further paths discussed but not applied: a straight-piece fast path (rejected — `mono_root`
-already skips the `sqrt` for lines, so the ceiling is tiny and GPU divergence would eat it), and the bigger
-structural wins from `docs/NOTES.md` (band moments, backdrop).
+the comparison fair. Also rejected: a straight-piece fast path (`mono_root` already skips the `sqrt` for lines,
+so the ceiling is tiny and GPU divergence would eat it).
+
+## windfoil+ : moments + backdrop acceleration (`windfoil-accel.wgsl`)
+
+The `docs/NOTES.md` "Band Moments" and "Backdrop" ideas, fused into one **2D-cell** structure (kept in bench/ so
+`src/windfoil.wgsl` stays the thin reference). For a band wholly inside the pixel's y-slab, its curves are split
+into a fixed grid of vertical cells; per cell a fragment classifies vs its pixel box — **fully inside → the
+moment `S+(xref−rc.x+hx)·D`** (O(1)), **fully right → the backdrop `sx·D`** (O(1)), fully left → 0, and only the
+≤2 straddle cells integrate. Shown as a third column (`windfoil+`); `--check` confirms it is **bit-identical**
+to windfoil (|Δrgb| 0.00000).
+
+Honest result on these scenes: it's a **specialized** win, not a free one.
+- **Wins ~1.6× at deep minification of dense art** (the complex shape at 2px: windfoil 1254 ms/frame → 797 ms) —
+  windfoil's single worst regime, where the y-slab covers whole bands so many cells collapse to O(1).
+- **Neutral-to-slightly-slower elsewhere** (~5–20%): text bands are too sparse to amortize the cell sweep (gated
+  back to the plain gather), and the larger shader lowers occupancy even on the plain path. The win is also
+  narrow because wide curves (e.g. ellipse arcs spanning the shape) x-split into many sub-pieces, so the ≤2
+  straddle cells stay expensive; only the *interior* cells fully collapse.
+
+So the moment/backdrop math works and is exact, but for this content the payoff is confined to heavily-minified
+dense vector art. It's gated (dense band + interior + box spanning ≥3 cells) so it only engages where it wins.
