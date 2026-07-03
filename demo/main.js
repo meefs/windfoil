@@ -327,7 +327,7 @@ async function main() {
     // same regardless of frame interval; below a hair of a pixel per frame we snap to rest.
     if (!dragging && (velX || velY) && dt > 0) {
       panBy(velX * dt, velY * dt);
-      const decay = Math.pow(0.94, dt / FRAME_MS);
+      const decay = Math.pow(0.82, dt / FRAME_MS);
       velX *= decay;
       velY *= decay;
       if (Math.abs(velX) < 0.002 && Math.abs(velY) < 0.002) velX = velY = 0;
