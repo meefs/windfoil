@@ -157,6 +157,8 @@ the comparison fair. Also rejected: a straight-piece fast path (`mono_root` alre
 
 ## Rejected: band-moments acceleration (two attempts, both net-negative)
 
+> Full engineering log with numbers and the register-pressure/divergence mechanics: **[`ACCEL-NOTES.md`](ACCEL-NOTES.md)**.
+
 `docs/NOTES.md` proposes accelerating minified windfoil with **Band Moments** (a band wholly inside the pixel's
 y-slab, x-contained by the box, contributes the closed form `S + (xref−rc.x+hx)·D`) and a **Backdrop** (fold
 far-right winding into a constant). I built both — the math is correct and **bit-exact** (`--check` |Δrgb|
