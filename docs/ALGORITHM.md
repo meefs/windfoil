@@ -216,17 +216,13 @@ Honest weaknesses:
 ## 9. Prior Art
 
 This builds particularly on [the Slug Algorithm](https://terathon.com/blog/decade-slug.html) — the dual-ray analytic gather it grew out of — but draws on a lot of
-existing work and may well overlap ideas we haven't traced. A rough, non-exhaustive list of what feels related
-(see the README for links and more context):
+existing work and may well overlap ideas we haven't traced. A rough, non-exhaustive list of what feels related:
 
-- **Green's-theorem / signed-area rasterizers** — font-rs (Levien), Pathfinder, Vello. Same `∮ x dy` per-edge
-  decomposition, but as a scatter + prefix-sum accumulation pass rather than a gather.
-- **Analytic per-fragment coverage** — Slug (Lengyel, dual-ray), Loop–Blinn (implicit quadratics). The gather
-  execution model, without the closed-form box filter.
-- **Exact polygonal filtering** — Jonathan Olson's Alpenglow: Green's-theorem closed-form box / tent /
-  Mitchell–Netravali filtering, for polygons (see the [`NOTES.md`](NOTES.md) Filter Kernels note).
-- **Per-cell / random-access schemes** — Nehab–Hoppe (RAVG), Ganacim et al. Relevant to the banding (§6) and
-  backdrop ideas.
-- **Classic area sampling** — Catmull (1978), Duff — exact coverage by integrating the filter over the shape.
-- **Atlas / distance-field text** — Valve SDF (Green), msdfgen (Chlumský), Wallace's outline gather — the baked
-  alternatives §8 contrasts against.
+- [GPU text rendering with vector textures](https://wdobbie.com/post/gpu-text-rendering-with-vector-textures/) — Will Dobbie (2016): a grid-of-cells GPU text gather; sketches the same Green's-theorem area idea before opting for ray-sampled coverage instead.
+- **Signed-area rasterizers** — [font-rs](https://github.com/raphlinus/font-rs) (Raph Levien), [Pathfinder](https://github.com/servo/pathfinder) (Patrick Walton), [Vello](https://github.com/linebender/vello) (Linebender): the same `∮ x dy` per-edge decomposition, done as an accumulation pass rather than a gather.
+- **Analytic per-fragment coverage** — [Slug](https://sluglibrary.com/) (Eric Lengyel), [Loop–Blinn](https://developer.nvidia.com/gpugems/gpugems3/part-iv-image-effects/chapter-25-rendering-vector-art-gpu), [Easy Scalable Text Rendering](https://medium.com/@evanwallace/easy-scalable-text-rendering-on-the-gpu-c3f4d782c5ac) (Evan Wallace): similar per-fragment coverage gathers.
+- [Analytic Rasterization of Curves with Polynomial Filters](https://josiahmanson.com/research/scanline_rasterization/) — Manson & Schaefer (Eurographics 2013; and their Wavelet Rasterization, 2011): closed-form curve coverage under polynomial filters via a boundary integral, box as the low-order case — close to this, done as a CPU scanline rasterizer.
+- [Exact Polygonal Filtering](https://jonathanolson.net/exact-polygonal-filtering) — Jonathan Olson (Alpenglow): closed-form box / tent / Mitchell–Netravali filtering for polygons.
+- **Per-cell / random-access schemes** — [Random-Access Vector Graphics](https://hhoppe.com/proj/ravg/) (Nehab & Hoppe), Ganacim et al.: per-cell curve lookup, related to the banding (§6).
+- **Classic area sampling** — Catmull (1978), Duff: coverage by integrating over the shape.
+- **Atlas / distance-field text** — [Valve SDF](https://steamcdn-a.akamaihd.net/apps/valve/2007/SIGGRAPH2007_AlphaTestedMagnification.pdf) (Chris Green), [msdfgen](https://github.com/Chlumsky/msdfgen) (Viktor Chlumský): baked-resolution alternatives.

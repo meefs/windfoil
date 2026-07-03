@@ -91,15 +91,21 @@ fn style_coverage(cov : f32, gamma : f32, sharp : f32) -> f32 {
   return clamp(s, 0.0, 1.0);
 }
 
-// Solve the monotone quadratic component A2·t² + A1·t + A0 = v on [0,1]. `e0`/`e1` are the component's
-// values at t = 0 / 1 (endpoint-exact for a monotone piece): saturate to 0 if the piece starts past `v`,
-// to 1 if it never reaches `v`. The root branch is picked by the derivative sign matching `rising`.
-fn mono_root(a2 : f32, a1 : f32, a0 : f32, e0 : f32, e1 : f32, v : f32, rising : bool) -> f32 {
+// Derivative of a power-basis quadratic component at t: (a2·t² + a1·t + a0)′ = 2·a2·t + a1.
+fn qd(a2 : f32, a1 : f32, t : f32) -> f32 {
+  return 2.0 * a2 * t + a1;
+}
+
+// Solve the monotone quadratic component A2·t² + A1·t + A0 = v on [0,1]. `a0` is the component's value at
+// t = 0 (the constant coefficient); `e1` its value at t = 1 (endpoint-exact for a monotone piece): saturate
+// to 0 if the piece starts past `v`, to 1 if it never reaches `v`. The root branch is picked by the
+// derivative sign matching `rising`.
+fn mono_root(a2 : f32, a1 : f32, a0 : f32, e1 : f32, v : f32, rising : bool) -> f32 {
   if (rising) {
-    if (e0 >= v) { return 0.0; }
+    if (a0 >= v) { return 0.0; }
     if (e1 <= v) { return 1.0; }
   } else {
-    if (e0 <= v) { return 0.0; }
+    if (a0 <= v) { return 0.0; }
     if (e1 >= v) { return 1.0; }
   }
   let c = a0 - v;
@@ -112,7 +118,7 @@ fn mono_root(a2 : f32, a1 : f32, a0 : f32, e0 : f32, e1 : f32, v : f32, rising :
   let qq = -0.5 * (a1 + select(-sq, sq, a1 >= 0.0));   // numerically stable quadratic
   let r1 = qq / a2;
   let r2 = select(0.0, c / qq, qq != 0.0);
-  let d1 = 2.0 * a2 * r1 + a1;
+  let d1 = qd(a2, a1, r1);
   let want = select(-1.0, 1.0, rising);
   let t = select(r2, r1, d1 * want >= 0.0);
   return clamp(t, 0.0, 1.0);
@@ -126,8 +132,8 @@ fn integrate_inside(a2 : vec2<f32>, a1 : vec2<f32>, q1 : vec2<f32>, ta : f32, tb
   let tm = 0.5 * (ta + tb);
   let d = 0.5 * (tb - ta);
   let x_mid = (a2.x * tm + a1.x) * tm + q1.x + hx;
-  let xp = 2.0 * a2.x * tm + a1.x;
-  let yp = 2.0 * a2.y * tm + a1.y;
+  let xp = qd(a2.x, a1.x, tm);
+  let yp = qd(a2.y, a1.y, tm);
   return 2.0 * d * x_mid * yp + (2.0 * d * d * d / 3.0) * (a2.x * yp + 2.0 * a2.y * xp);
 }
 
@@ -139,12 +145,12 @@ fn integrate_piece(q1 : vec2<f32>, q2 : vec2<f32>, q3 : vec2<f32>, lo : f32, hi 
   let a2 = q1 - 2.0 * q2 + q3;
   let a1 = 2.0 * (q2 - q1);
   let y_rising = q3.y >= q1.y;
-  let t_lo = mono_root(a2.y, a1.y, q1.y, q1.y, q3.y, select(hi, lo, y_rising), y_rising);
-  let t_hi = mono_root(a2.y, a1.y, q1.y, q1.y, q3.y, select(lo, hi, y_rising), y_rising);
+  let t_lo = mono_root(a2.y, a1.y, q1.y, q3.y, select(hi, lo, y_rising), y_rising);
+  let t_hi = mono_root(a2.y, a1.y, q1.y, q3.y, select(lo, hi, y_rising), y_rising);
   if (t_hi <= t_lo) { return 0.0; }
   let x_rising = q3.x >= q1.x;
-  let t_left = clamp(mono_root(a2.x, a1.x, q1.x, q1.x, q3.x, -hx, x_rising), t_lo, t_hi);
-  let t_right = clamp(mono_root(a2.x, a1.x, q1.x, q1.x, q3.x, hx, x_rising), t_lo, t_hi);
+  let t_left = clamp(mono_root(a2.x, a1.x, q1.x, q3.x, -hx, x_rising), t_lo, t_hi);
+  let t_right = clamp(mono_root(a2.x, a1.x, q1.x, q3.x, hx, x_rising), t_lo, t_hi);
   // Zones in sweep order: x rising ⇒ LEFT [t_lo,t_left] · INSIDE · RIGHT [t_right,t_hi]; mirrored if not.
   let t1 = select(t_right, t_left, x_rising);
   let t2 = max(select(t_left, t_right, x_rising), t1);
@@ -154,7 +160,7 @@ fn integrate_piece(q1 : vec2<f32>, q2 : vec2<f32>, q3 : vec2<f32>, lo : f32, hi 
   if (rb > ra) {
     // RIGHT zone: full box width × Δy, with Δy = Δt · y′(midpoint) (exact for the quadratic).
     let tm = 0.5 * (ra + rb);
-    acc += (rb - ra) * (2.0 * a2.y * tm + a1.y) * (2.0 * hx);
+    acc += (rb - ra) * qd(a2.y, a1.y, tm) * (2.0 * hx);
   }
   return acc;
 }
@@ -241,6 +247,12 @@ fn integrate_face(I : Instance, rc : vec2<f32>, s : vec2<f32>) -> f32 {
   return f_int;
 }
 
+// Straight-alpha color × coverage → premultiplied RGBA (the pipeline blends premultiplied-over).
+fn shade(color : vec4<f32>, cov : f32) -> vec4<f32> {
+  let a = color.a * cov;
+  return vec4<f32>(color.rgb * a, a);
+}
+
 @fragment
 fn fs(in : VsOut) -> @location(0) vec4<f32> {
   let I = instances[in.inst];
@@ -269,8 +281,7 @@ fn fs(in : VsOut) -> @location(0) vec4<f32> {
       let ovHi = min(pixHi, I.bbox.zw);
       let ov   = max(ovHi - ovLo, vec2<f32>(0.0));
       let cov  = clamp(INK_AVERAGE * ov.x * ov.y / (s.x * s.y), 0.0, 1.0);
-      let a = I.color.a * cov;
-      return vec4<f32>(I.color.rgb * a, a);
+      return shade(I.color, cov);
     }
     // for more performance gains:
     // there is also a middle ground where the glyph is above some small speck, but still
@@ -291,6 +302,5 @@ fn fs(in : VsOut) -> @location(0) vec4<f32> {
     cov = clamp(abs(f_cov), 0.0, 1.0);        // nonzero (saturating winding integral)
   }
   cov = style_coverage(cov, U.style.x, U.style.y);  // opt-in --gamma / --sharp tuning; (1,1) exact ⇒ identity
-  let a = I.color.a * cov;
-  return vec4<f32>(I.color.rgb * a, a);       // premultiplied — pipeline blends premultiplied-over
+  return shade(I.color, cov);                 // premultiplied — pipeline blends premultiplied-over
 }
