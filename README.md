@@ -38,7 +38,7 @@ This README was written by me, but most of the code and other documentation in t
 - [`src/windfoil.wgsl`](src/windfoil.wgsl) — the shader: the winding-integral box filter + the row-band gather
 - [`src/bands.js`](src/bands.js) — the row-band acceleration structure
 - [`src/font.js`](src/font.js) — glyph outlines + metrics from the bundled font (using opentype.js)
-- [`bench/`](bench/README.md) — a windfoil-vs-Slug WebGPU benchmark (a faithful port of Eric Lengyel's reference pixel shader, swept across zoom ladders on three scenes), with an [engineering log](bench/ACCEL-NOTES.md) of the accelerations that did and didn't work
+- [`bench/`](bench/README.md) — a windfoil-vs-Slug WebGPU benchmarks and acceleration notes
 
 ## How This Came About
 
