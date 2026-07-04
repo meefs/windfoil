@@ -147,8 +147,9 @@ documented §4 limit: the winding fold deviates by ~0.1 at the crossings, compar
 
 On its own the integral is a per-pixel loop over every curve — fine for a glyph, useless for a scene. The
 acceleration structure fixes that ([`../src/bands.js`](../src/bands.js) builds it; `integrate_face` reads it):
-each shape's monotone pieces are filed into horizontal **row bands** over its y-extent (`~6` pieces per band),
-and a fragment reads only the bands its pixel's y-slab touches. Three properties, all from the integral
+each shape's monotone pieces are filed into horizontal **row bands** over its y-extent (`~10` pieces per band —
+benchmarked in [`../bench/README.md`](../bench/README.md)), and a fragment reads only the bands its pixel's
+y-slab touches. Three properties, all from the integral
 sweeping along `x` inside a horizontal slab:
 
 1. **One band axis, not two.** Integration is horizontal, so a row band holds everything a fragment needs — no
@@ -176,17 +177,18 @@ wobbling by ~`ULP(coordinate)·zoom` from the `curve − rc` evaluation (see §8
 
 ## 7. Map to the code
 
-| concept                                                                   | where                                                           |
-| ------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| split curves into xy-monotone pieces                                      | [`src/geometry.js`](../src/geometry.js)                         |
-| file pieces into row bands, build the deduped atlas (§6)                  | [`src/bands.js`](../src/bands.js)                               |
-| `mono_root` — single-branch monotone quadratic solve                      | [`src/windfoil.wgsl`](../src/windfoil.wgsl)                     |
-| `integrate_inside` — exact midpoint rule for the INSIDE zone              | `src/windfoil.wgsl`                                             |
-| `integrate_piece` — the LEFT / INSIDE / RIGHT zone split                  | `src/windfoil.wgsl`                                             |
-| `integrate_band` — sum `A_e` over one band's pieces, with the early break | `src/windfoil.wgsl`                                             |
-| `integrate_face` — select + read the row bands a pixel touches (§6)       | `src/windfoil.wgsl`                                             |
-| `fs` — normalize `F` and fold (nonzero / even-odd)                        | `src/windfoil.wgsl`                                             |
-| instanced quad + per-glyph band table                                     | `src/windfoil.wgsl` (`vs`), [`src/layout.js`](../src/layout.js) |
+| concept                                                                   | where                                                                       |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| split curves into xy-monotone pieces                                      | [`src/geometry.js`](../src/geometry.js)                                     |
+| file pieces into row bands, build the deduped atlas (§6)                  | [`src/bands.js`](../src/bands.js)                                           |
+| `mono_root` — single-branch monotone quadratic solve                      | [`src/windfoil.wgsl`](../src/windfoil.wgsl)                                 |
+| `integrate_inside` — exact midpoint rule for the INSIDE zone              | `src/windfoil.wgsl`                                                         |
+| `integrate_piece` — the LEFT / INSIDE / RIGHT zone split                  | `src/windfoil.wgsl`                                                         |
+| `integrate_band` — sum `A_e` over one band's pieces, with the early break | `src/windfoil.wgsl`                                                         |
+| `integrate_face` — select + read the row bands a pixel touches (§6)       | `src/windfoil.wgsl`                                                         |
+| `profile_face` — the guard's banded ink profile, instances ≤ a few px (§8) | `src/windfoil.wgsl` (`MINIFICATION_GUARD`), `src/bands.js` (per-band areas) |
+| `fs` / `fold_shade` — normalize `F`, fold (nonzero / even-odd), style     | `src/windfoil.wgsl`                                                         |
+| instanced quad + per-glyph band table                                     | `src/windfoil.wgsl` (`vs`), [`src/layout.js`](../src/layout.js)             |
 
 ---
 
@@ -208,8 +210,13 @@ Honest weaknesses:
 - **Per-pixel cost** — a curve-crossed pixel does a few `sqrt`s vs one or two for ramp methods; more arithmetic
   than a heuristic, by design.
 - **Minification** — zoomed out, a footprint spans whole row bands so every curve integrates per pixel, costlier
-  than Slug's dual-ray. This repo guards with a cheap sub-pixel approximation; a proper fix is per-band moments
-  at +2 floats/band ([`NOTES.md`](NOTES.md) → Band Moments), if minification matters.
+  than Slug's dual-ray. Below the point where an instance is legible at all (whole glyph ≤ ~3.7 device px), the
+  shader switches to a **banded ink profile**: each band's exact winding integral and x-hull are precomputed at
+  atlas build and ride in the row table, so tiny glyphs render from a few table taps with no curve reads — their
+  true average coverage, y-resolved by band. That caps the worst case (~30× at a 2px em) while everything at
+  legible sizes stays the exact integral, bit-for-bit. The remaining gap to Slug at legible small text (8–64px)
+  is per-crossing arithmetic and is measured, with the ideas that did and didn't help, in
+  [`../bench/README.md`](../bench/README.md) and [`../bench/ACCEL-NOTES.md`](../bench/ACCEL-NOTES.md).
 
 ---
 
@@ -226,3 +233,28 @@ existing work and may well overlap ideas we haven't traced. A rough, non-exhaust
 - **Per-cell / random-access schemes** — [Random-Access Vector Graphics](https://hhoppe.com/proj/ravg/) (Nehab & Hoppe), Ganacim et al.: per-cell curve lookup, related to the banding (§6).
 - **Classic area sampling** — Catmull (1978), Duff: coverage by integrating over the shape.
 - **Atlas / distance-field text** — [Valve SDF](https://steamcdn-a.akamaihd.net/apps/valve/2007/SIGGRAPH2007_AlphaTestedMagnification.pdf) (Chris Green), [msdfgen](https://github.com/Chlumsky/msdfgen) (Viktor Chlumský): baked-resolution alternatives.
+
+---
+
+## Changelog
+
+How the algorithm has evolved since the first draft — each change benchmarked in [`../bench/`](../bench/README.md)
+(long-form notes in [`ACCEL-NOTES.md`](../bench/ACCEL-NOTES.md)), with `deno task validate` bit-identical wherever
+the path is exact:
+
+- **Initial algorithm** — the closed-form winding integral (§2–§4) gathered through row bands (§6), plus a crude
+  sub-pixel guard (a hardcoded average ink fraction for glyphs smaller than a pixel).
+- **Band tuning** — `TARGET_PER_BAND` 6 → 10: coarser bands are nearly free per extra piece (early break, cheap
+  far-curve path), and a footprint spans fewer of them (~8–19% at small/medium sizes, ~15% smaller atlas). Later,
+  `BAND_SORT_MIN` 8 → 4 (the sorted early break pays on nearly any band).
+- **Banded-ink minification guard** — the row table grew from `[start, count]` pairs to
+  `[start, count, area, xMin, xMax]`: each band's exact winding integral (computed analytically at atlas build)
+  and its x-hull. An instance spanning ≤ `GUARD_PX` (≈3.7) device pixels renders from this profile — its true
+  per-band ink, no curve reads — replacing the hardcoded average and capping the minification worst case (~30×
+  at a 2px em) while legible sizes stay exact, bit-for-bit (§8).
+- **Fragment-cost trims** — the AA skirt pad tightened 2px → 1px (coverage reaches only half a pixel past the
+  ink; the pad ring dominates small instances), the footprint moved to `fwidth` (no sqrt), and `mono_root` picks
+  its root branch by the sign of `a1` instead of evaluating the derivative.
+- **Simplification pass** — the shader deduplicated into named helpers (`fold_shade`, `profile_face`, the band
+  mapping/overlap helpers, `ROW_*` layout constants) and dead guards removed — verified byte-identical renders
+  and baseline-identical timings.

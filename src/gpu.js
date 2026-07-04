@@ -6,11 +6,12 @@
 
 const WGSL_URL = new URL('./windfoil.wgsl', import.meta.url);
 
-// Read the WGSL source in either environment: Deno reads it off disk, the browser fetches it (both resolve
-// relative to this module, so the client only needs to be served from the repo root).
-export async function loadShaderCode() {
-  if (typeof Deno !== 'undefined') return Deno.readTextFile(WGSL_URL);
-  return fetch(WGSL_URL).then((r) => r.text());
+// Read a WGSL source in either environment: Deno reads it off disk, the browser fetches it. Defaults to the
+// windfoil shader; pass a URL to load a different one (e.g. the benchmark's Slug shader), so the loader stays
+// shared rather than duplicated. Both resolve relative to their module.
+export async function loadShaderCode(url = WGSL_URL) {
+  if (typeof Deno !== 'undefined') return Deno.readTextFile(url);
+  return fetch(url).then((r) => r.text());
 }
 
 // Request a WebGPU device (throws with a helpful message if there's no adapter).
@@ -41,7 +42,7 @@ function storage(device, floats) {
  * @param {string} o.code            the WGSL source (see `loadShaderCode`)
  * @param {GPUTextureFormat} o.format the render target's format ('rgba8unorm' offscreen; the canvas preferred format live)
  * @param {Float32Array} o.curves    the deduped, band-duplicated curve atlas (3 vec2 per monotone piece)
- * @param {Uint32Array} o.rows       the row-band table ([start, count] per band)
+ * @param {Uint32Array} o.rows       the row-band table ([start, count, area, xMin, xMax] per band; see bands.js)
  * @param {Float32Array} o.instances packed instance data (16 floats each)
  * @param {number} o.instanceCount
  */
