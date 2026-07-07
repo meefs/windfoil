@@ -8,12 +8,12 @@ Some scratch notes and ideas that might pair well with windfoil.
 
 Outline normals come ~free (emboss/deboss). The gradient of the coverage integral _is_ the normal (Stokes):
 
-```
-∇ ∫∫_box w dA  =  ∮_{outline ∩ box} n ds
-```
+$$
+\nabla \iint_{\text{box}} w\, dA = \oint_{\text{outline} \,\cap\, \text{box}} \mathbf{n}\, ds
+$$
 
-Per monotone piece `n ds = (y', −x') dt`, so over the INSIDE `[t1,t2]` (already solved) it telescopes to the
-chord rotated 90°: `(Δy, −Δx)`. Accumulate next to the area, gated on `want_grad` so the fill path pays nothing.
+Per monotone piece $\mathbf{n}\, ds = (y', -x')\, dt$, so over the INSIDE $[t_1, t_2]$ (already solved) it telescopes to the
+chord rotated 90°: $(\Delta y, -\Delta x)$. Accumulate next to the area, gated on `want_grad` so the fill path pays nothing.
 
 ```
 # per piece, same loop as coverage (p1,p2 = curve(t1),curve(t2), already computed):
@@ -41,14 +41,16 @@ Minified, a footprint spans whole bands → `integrate_face` runs every curve pe
 fully covered in y (glyph inside the box in x) contributes a constant + a term linear in `rc.x`, precomputable.
 Per band, `xref` = bbox `loX`:
 
-```
-S[i] = Σ ∫_band (x − xref)·y′ dt     # area moment
-D[i] = Σ ∫_band y′ dt                # net Δy
-```
+$$
+\begin{aligned}
+S_i &= \sum \int_{\text{band}} (x - x_{\text{ref}})\, y'\, dt \qquad (\text{area moment}) \\
+D_i &= \sum \int_{\text{band}} y'\, dt \qquad (\text{net } \Delta y)
+\end{aligned}
+$$
 
-Covered band → `S[i] + (xref − rc.x + hx)·D[i]` in O(1), exact. Only the ≤2 bands the slab edge cuts run the
-real integral. Fires when the footprint ≥ one band (glyph ≲ `bandCount` px) → small/medium only; `ΣS = A_glyph`,
-`ΣD = 0`, so full coverage collapses to the sub-pixel constant.
+Covered band → $S_i + (x_{\text{ref}} - r_c.x + h_x)\, D_i$ in $O(1)$, exact. Only the ≤2 bands the slab edge cuts run the
+real integral. Fires when the footprint ≥ one band (glyph ≲ `bandCount` px) → small/medium only; $\sum S = A_{\text{glyph}}$,
+$\sum D = 0$, so full coverage collapses to the sub-pixel constant.
 
 ```
 # bands.js, while filing (one vec2/band, parallel to `rows`):
@@ -71,22 +73,22 @@ a 1px box).
 > curves within one) and remains open.
 
 A pixel buried in a complex scene shouldn't scan curves it can't see. §2's `clamp` already sends every edge
-**fully right of the box** to `sx·Δy`; over edges that also span the box in y this sums to `sx·sy·(integer
-winding)`. So everything outside a cell reduces to one signed **integer** `W`, constant across the cell (the
-integral is linear over edges, §6) and additive across stacked shapes.
+**fully right of the box** to $s_x \Delta y$; over edges that also span the box in y this sums to
+$s_x s_y \cdot (\text{integer winding})$. So everything outside a cell reduces to one signed **integer** $W$, constant
+across the cell (the integral is linear over edges, §6) and additive across stacked shapes.
 
-Tile the scene; file only hull-intersecting curves into each cell, precompute `W` = net winding of everything
+Tile the scene; file only hull-intersecting curves into each cell, precompute $W$ = net winding of everything
 fully right of + y-spanning it:
 
-```
-F = W + integrate_cell(local curves) / (sx·sy)
-```
+$$
+F = W + \frac{\texttt{integrate\_cell}(\text{local curves})}{s_x s_y}
+$$
 
-Exact (integer `W`), so coverage is bit-for-bit — the win is that far geometry costs zero fragment work (a pixel
+Exact (integer $W$), so coverage is bit-for-bit — the win is that far geometry costs zero fragment work (a pixel
 inside 100 nested contours scans only the few crossing its cell). Cells are row bands at scene scale: bands
 bound the gather in y, cells in xy.
 
-Wire-up: coarse cell grid with per-cell `[curveStart, count]` + `W`, read in `integrate_face` before the band loop.
+Wire-up: coarse cell grid with per-cell `[curveStart, count]` + $W$, read in `integrate_face` before the band loop.
 
 ## Box Blur
 
@@ -102,20 +104,20 @@ a uniform so fill stays `sEff == s`.
 
 ## Filter Kernels
 
-Nothing in §2 assumes the footprint weight is uniform — it filters the winding number by any kernel `k(x,y)`.
-With the horizontal cumulative `Φ(x,y) = ∫_{−∞}^{x} k(u,y) du`:
+Nothing in §2 assumes the footprint weight is uniform — it filters the winding number by any kernel $k(x, y)$.
+With the horizontal cumulative $\Phi(x, y) = \int_{-\infty}^{x} k(u, y)\, du$:
 
-```
-F = Σ_e ∫ Φ(x_e(t), y_e(t)) · y′_e(t) dt
-```
+$$
+F = \sum_e \int \Phi(x_e(t), y_e(t)) \cdot y_e'(t)\, dt
+$$
 
-Box is the degree-0 case (`Φ = clamp(x, xlo, xhi) − xlo`, the ramp §2 integrates). A separable `k = kx·ky` just
-raises `Φ`'s degree, still closed-form per piece:
+Box is the degree-0 case ($\Phi = \operatorname{clamp}(x, x_{lo}, x_{hi}) - x_{lo}$, the ramp §2 integrates). A separable $k = k_x k_y$ just
+raises $\Phi$'s degree, still closed-form per piece:
 
-- **Tent / bilinear** — `Φ` quadratic; +1 x-zone at the center knot, 2px support.
-- **Mitchell–Netravali** — `Φ` quartic; knots at ±1/±2, 4px support, `B=C=1/3`. Crisper, slight negative lobes.
+- **Tent / bilinear** — $\Phi$ quadratic; +1 x-zone at the center knot, 2px support.
+- **Mitchell–Netravali** — $\Phi$ quartic; knots at $\pm 1 / \pm 2$, 4px support, $B = C = 1/3$. Crisper, slight negative lobes.
 - Any piecewise-polynomial kernel is exact; Gaussian/sinc via a polynomial fit.
 
 So the box is the reference, not a ceiling — the kernel is a rendering choice (tent softer, MN crisper), the
 principled version of the `style` curve. Cost: wider support → more bands + later break, each knot → an x-zone.
-`Φ·y′` generalizes `integrate_piece`; the box is its `Φ = clamp − xlo` case.
+$\Phi \cdot y'$ generalizes `integrate_piece`; the box is its $\Phi = \operatorname{clamp} - x_{lo}$ case.

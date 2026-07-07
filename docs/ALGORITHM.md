@@ -14,46 +14,45 @@ derived below.
 
 ## 1. Goal
 
-A shape is directed contours plus a fill rule. Its **winding number** `w(x, y)` counts the signed ray
-crossings from `(x, y)`; the fill is `{ w ≠ 0 }` (nonzero) or `{ w odd }` (even-odd). The ideal antialiased
+A shape is directed contours plus a fill rule. Its **winding number** $w(x, y)$ counts the signed ray
+crossings from $(x, y)$; the fill is $\{\, w \neq 0 \,\}$ (nonzero) or $\{\, w \text{ odd} \,\}$ (even-odd). The ideal antialiased
 pixel value is the average of the fill over the pixel footprint — a **box filter**. In the shape's local space
 that footprint is an axis-aligned box
 
-```
-B = [xlo, xhi] × [ylo, yhi],   centered at pixel center rc,   size s = (sx, sy)
-```
+$$
+B = [x_{lo}, x_{hi}] \times [y_{lo}, y_{hi}], \qquad \text{centered at pixel center } r_c, \qquad \text{size } s = (s_x, s_y)
+$$
 
-with `s` in _units per pixel_, taken from the screen-space gradient of the local coordinate (`dpdx`/`dpdy`) —
+with $s$ in _units per pixel_, taken from the screen-space gradient of the local coordinate (`dpdx`/`dpdy`) —
 so the method is resolution-independent. We want, per pixel,
 
-```
-F = (1 / (sx·sy)) · ∫∫_B w(x, y) dA
-```
+$$
+F = \frac{1}{s_x s_y} \iint_B w(x, y)\, dA
+$$
 
-then a fold from `F` to `[0,1]` coverage (§4).
+then a fold from $F$ to $[0,1]$ coverage (§4).
 
 ---
 
 ## 2. Formula
 
-Green's theorem (`∫∫_R dA = ∮_∂R x dy`) turns the area integral of the winding number into boundary integrals,
-one per curve. Clipping to `B` and folding the box-edge terms into a clamp gives an exact decomposition over
-the curves `e`:
+Green's theorem ($\iint_R dA = \oint_{\partial R} x\, dy$) turns the area integral of the winding number into boundary integrals,
+one per curve. Clipping to $B$ and folding the box-edge terms into a clamp gives an exact decomposition over
+the curves $e$:
 
-```
-∫∫_B w dA  =  Σ_e A_e ,
+$$
+\iint_B w\, dA = \sum_e A_e, \qquad
+A_e = \int_{\,y_e(t) \in [y_{lo}, y_{hi}]} \big( \operatorname{clamp}(x_e(t), x_{lo}, x_{hi}) - x_{lo} \big)\, y_e'(t)\, dt
+$$
 
-A_e = ∫  ( clamp( x_e(t), xlo, xhi ) − xlo ) · y_e′(t)  dt      (over t where y_e(t) ∈ [ylo, yhi])
-```
-
-At height `y` the curve sits at `x_e`, so the horizontal extent it covers inside the box is
-`clamp(x_e, xlo, xhi) − xlo`; the `y_e′ dt` factor sweeps that extent up the curve with the correct sign. The
+At height $y$ the curve sits at $x_e$, so the horizontal extent it covers inside the box is
+$\operatorname{clamp}(x_e, x_{lo}, x_{hi}) - x_{lo}$; the $y_e'\, dt$ factor sweeps that extent up the curve with the correct sign. The
 single clamp collapses the cases:
 
-| curve position relative to box | `clamp(x_e, xlo, xhi) − xlo` | contribution                           |
+| curve position relative to box | $\operatorname{clamp}(x_e, x_{lo}, x_{hi}) - x_{lo}$ | contribution                           |
 | ------------------------------ | ---------------------------- | -------------------------------------- |
-| fully **left** (`x_e ≤ xlo`)   | `0`                          | nothing                                |
-| fully **right** (`x_e ≥ xhi`)  | `xhi − xlo = sx`             | full box width × Δy — interior winding |
+| fully **left** ($x_e \leq x_{lo}$)   | $0$                          | nothing                                |
+| fully **right** ($x_e \geq x_{hi}$)  | $x_{hi} - x_{lo} = s_x$             | full box width $\times \Delta y$ — interior winding |
 | **crossing** the box           | partial                      | boundary area — the anti-aliasing      |
 
 Interior winding and edge anti-aliasing come from one term, with no separate inside/outside test or edge ramp;
@@ -64,39 +63,39 @@ robust monotone splitting and finite-precision roots.)
 
 ## 3. The per-curve closed form
 
-`A_e` has a closed form once each curve piece is **monotone in both x and y**: it then crosses each box edge at
-most once, so `{ t : y_e(t) ∈ [ylo, yhi] }` is a single interval and each crossing is a single root with a
+$A_e$ has a closed form once each curve piece is **monotone in both x and y**: it then crosses each box edge at
+most once, so $\{\, t : y_e(t) \in [y_{lo}, y_{hi}] \,\}$ is a single interval and each crossing is a single root with a
 known branch.
 
-A quadratic Bézier has at most one interior extremum per axis, so splitting at those (≤ 2) parameters gives
+A quadratic Bézier has at most one interior extremum per axis, so splitting at those ($\leq 2$) parameters gives
 **1–3 monotone pieces**; straight segments are already monotone. We split once per unique glyph on the CPU
 ([`../src/geometry.js`](../src/geometry.js)); the shader only sees monotone pieces.
 
-For a piece with endpoints `q1, q3` and control `q2` (relative to `rc`), write `q(t) = q1 + a1·t + a2·t²`,
-`a1 = 2(q2−q1)`, `a2 = q1 − 2q2 + q3`.
+For a piece with endpoints $q_1, q_3$ and control $q_2$ (relative to $r_c$), write $q(t) = q_1 + a_1 t + a_2 t^2$,
+$a_1 = 2(q_2 - q_1)$, $a_2 = q_1 - 2 q_2 + q_3$.
 
-**Step 1 — the y-window.** Solve `y(t)` for the band edges to get `[t_lo, t_hi]` where the piece lies in
-`[ylo, yhi]`. Being y-monotone, this is one root each, the branch fixed by the rise/fall direction and
+**Step 1 — the y-window.** Solve $y(t)$ for the band edges to get $[t_{lo}, t_{hi}]$ where the piece lies in
+$[y_{lo}, y_{hi}]$. Being y-monotone, this is one root each, the branch fixed by the rise/fall direction and
 saturated by the endpoints (`mono_root` in the shader — one `sqrt`, no branch-count logic).
 
-**Step 2 — the x-zones.** Along `[t_lo, t_hi]` the x-clamp splits the interval at the (≤ 2) crossings of
-`x = xlo` and `x = xhi` into three zones in a statically known order (set by the x direction):
+**Step 2 — the x-zones.** Along $[t_{lo}, t_{hi}]$ the x-clamp splits the interval at the ($\leq 2$) crossings of
+$x = x_{lo}$ and $x = x_{hi}$ into three zones in a statically known order (set by the x direction):
 
 ```
    x rising →   t_lo ── LEFT ──┤ t_left ── INSIDE ──┤ t_right ── RIGHT ── t_hi
    (mirrored when the piece runs the other way)
 ```
 
-- **LEFT** (`x < xlo`): contributes `0`.
-- **RIGHT** (`x > xhi`): contributes `sx · Δy`, `Δy = Δt · y′(midpoint)` — exact, since `y′` is linear.
-- **INSIDE**: the integrand `(x(t) + hx)·y′(t)` is a cubic in `t`; on a symmetric interval `t̄ ± δ` the odd
+- **LEFT** ($x < x_{lo}$): contributes $0$.
+- **RIGHT** ($x > x_{hi}$): contributes $s_x \cdot \Delta y$, $\Delta y = \Delta t \cdot y'(\text{midpoint})$ — exact, since $y'$ is linear.
+- **INSIDE**: the integrand $(x(t) + h_x)\, y'(t)$ is a cubic in $t$; on a symmetric interval $\bar{t} \pm \delta$ the odd
   powers cancel, so the **midpoint rule is exact**:
 
-  ```
-  A_inside = 2δ · X · Y′  +  (2δ³/3) · ( a2x·Y′ + 2·a2y·X′ )
+  ```math
+  A_{\text{inside}} = 2\delta \cdot X \cdot Y' + \tfrac{2\delta^3}{3} \big( a_{2x} Y' + 2\, a_{2y} X' \big)
   ```
 
-  with `X = x(t̄) + hx` (box-local, so `0 ≤ X ≤ sx`), `X′ = x′(t̄)`, `Y′ = y′(t̄)`, `hx = sx/2`.
+  with $X = x(\bar{t}) + h_x$ (box-local, so $0 \leq X \leq s_x$), $X' = x'(\bar{t})$, $Y' = y'(\bar{t})$, $h_x = s_x/2$.
 
 Each piece is a fixed amount of work: single-branch root solves for the y-window and x-zone boundaries, then a
 few multiply-adds. Pieces whose monotone hull is fully left or right of the box skip the solves via endpoint
@@ -106,10 +105,10 @@ extent tests.
 
 ## 4. From winding integral to coverage
 
-Normalize `F = (Σ_e A_e) / (sx·sy)`, the pixel-averaged winding number, and fold to coverage by fill rule:
+Normalize $F = \left( \sum_e A_e \right) / (s_x s_y)$, the pixel-averaged winding number, and fold to coverage by fill rule:
 
-- **nonzero:** `coverage = min(|F|, 1)`
-- **even-odd:** `coverage = tri(F)`, the period-2 triangle wave.
+- **nonzero:** $\text{coverage} = \min(|F|, 1)$
+- **even-odd:** $\text{coverage} = \operatorname{tri}(F)$, the period-2 triangle wave.
 
 For a pixel spanning two adjacent winding levels (ordinary edge pixels) this is the exact box-filtered
 coverage. For a pixel with opposite-sign winding cancellation or three or more winding levels at once, the fold
@@ -226,7 +225,7 @@ This builds particularly on [the Slug Algorithm](https://terathon.com/blog/decad
 existing work and may well overlap ideas we haven't traced. A rough, non-exhaustive list of what feels related:
 
 - [GPU text rendering with vector textures](https://wdobbie.com/post/gpu-text-rendering-with-vector-textures/) — Will Dobbie (2016): a grid-of-cells GPU text gather; sketches the same Green's-theorem area idea before opting for ray-sampled coverage instead.
-- **Signed-area rasterizers** — [font-rs](https://github.com/raphlinus/font-rs) (Raph Levien), [Pathfinder](https://github.com/servo/pathfinder) (Patrick Walton), [Vello](https://github.com/linebender/vello) (Linebender): the same `∮ x dy` per-edge decomposition, done as an accumulation pass rather than a gather.
+- **Signed-area rasterizers** — [font-rs](https://github.com/raphlinus/font-rs) (Raph Levien), [Pathfinder](https://github.com/servo/pathfinder) (Patrick Walton), [Vello](https://github.com/linebender/vello) (Linebender): the same $\oint x\, dy$ per-edge decomposition, done as an accumulation pass rather than a gather.
 - **Analytic per-fragment coverage** — [Slug](https://sluglibrary.com/) (Eric Lengyel), [Loop–Blinn](https://developer.nvidia.com/gpugems/gpugems3/part-iv-image-effects/chapter-25-rendering-vector-art-gpu), [Easy Scalable Text Rendering](https://medium.com/@evanwallace/easy-scalable-text-rendering-on-the-gpu-c3f4d782c5ac) (Evan Wallace): similar per-fragment coverage gathers.
 - [Analytic Rasterization of Curves with Polynomial Filters](https://josiahmanson.com/research/scanline_rasterization/) — Manson & Schaefer (Eurographics 2013; and their Wavelet Rasterization, 2011): closed-form curve coverage under polynomial filters via a boundary integral, box as the low-order case — close to this, done as a CPU scanline rasterizer.
 - [Exact Polygonal Filtering](https://jonathanolson.net/exact-polygonal-filtering) — Jonathan Olson (Alpenglow): closed-form box / tent / Mitchell–Netravali filtering for polygons.
