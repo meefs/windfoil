@@ -41,9 +41,10 @@ x-hull ride in the row table (`[start, count, area, xMin, xMax]`); a whole insta
 
 It survives the rules above because the condition is per-instance-per-zoom (at 2–4px _every_ glyph takes it
 — coherent warps) and the path is a short table loop (no measurable register tax). Measured: glyphs @2px
-**45 → 1.7 ms**, @4px **11.8 → 0.44 ms** — windfoil flips from ~5× slower than Slug to ~5× faster — and
-≥8px is bit-identical since the guard can't fire (8px-em lowercase ≈ 4.3px > 3.7). Replaces the old flat
-`INK_AVERAGE = 0.42`. The dial extends to dense art: `GUARD_PX = 8` runs the tiger @64px 1.9× faster with
+**45 → 1.7 ms**, @4px **11.8 → 0.44 ms** — windfoil flips from ~5× slower than Slug to ~5× faster. ≥8px em is
+bit-identical for a full-x-height glyph (its lowercase ink ≈ 4.3px > 3.7 at 8px), but the gate is the per-glyph
+ink box, not em size — small-ink punctuation stays under 3.7px and is approximated well past 8px em (Lato `.` to
+~29.5px em, `,` ~14.6px, `-` ~15.0px). Replaces the old flat `INK_AVERAGE = 0.42`. The dial extends to dense art: `GUARD_PX = 8` runs the tiger @64px 1.9× faster with
 mean error below the two algorithms' own AA-model difference, but approximates visible features — opt-in,
 not default.
 

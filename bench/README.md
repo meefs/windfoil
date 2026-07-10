@@ -135,9 +135,12 @@ so `tiger.js` now appends the closing edge on load, feeding both algorithms iden
 
 windfoil trades per-pixel cost for exactness and used to degrade without bound at minification (many bands
 per footprint); the banded-ink guard now caps that entire regime at the point where text stops being legible
-(a whole glyph ≤ ~3.7 device px on both axes), where the profile is visually equivalent and ~30× faster than
-integrating. From 8px up the render is bit-identical to the exact integral — the guard cannot fire there by
-construction (an 8px em's lowercase is ~4.3px tall).
+(a glyph's _ink box_ ≤ ~3.7 device px on both axes), where the profile is visually equivalent and ~30× faster
+than integrating. The gate is per-glyph ink extent, not em size: a full-x-height glyph is bit-identical to the
+exact integral from ~8px em up (its lowercase ink is ~4.3px tall at 8px, > 3.7), but small-ink punctuation keeps
+an ink box under 3.7px well past that — a Lato `.` is approximated up to ~29.5px em, `,` to ~14.6px, `-` to
+~15.0px — where the profile stays visually equivalent (a few device px of ink) without being bit-identical. So
+the 8–32px glyph levels above time punctuation through the fast approximate path, not the exact integral.
 
 **Complex shape (240 self-crossing quads):**
 
@@ -214,8 +217,10 @@ Core-algorithm changes tuned with this harness (all coverage-preserving where ex
   `bandPieces`'s optional argument) to keep the comparison fair.
 - **Banded-ink minification guard** (`MINIFICATION_GUARD` / `GUARD_PX`, `src/windfoil.wgsl`): each band's
   exact winding integral + x-hull ride in the row table ([start, count, area, xMin, xMax] per band); an
-  instance spanning ≤ 3.7 device px renders from that profile with no curve reads. Glyphs @2px **45 → 1.7 ms**,
-  @4px **11.8 → 0.44 ms** (windfoil flips from ~5× slower than Slug to ~5× faster); ≥ 8px bit-identical.
+  instance whose _ink box_ spans ≤ 3.7 device px on both axes renders from that profile with no curve reads.
+  Glyphs @2px **45 → 1.7 ms**, @4px **11.8 → 0.44 ms** (windfoil flips from ~5× slower than Slug to ~5× faster);
+  ≥ 8px em bit-identical for full-x-height glyphs, but small-ink punctuation is approximated higher (Lato `.` to
+  ~29.5px em, `,` ~14.6px, `-` ~15.0px) since the gate is the ink box, not the em.
 - **AA pad 2px → 1px** (both vertex shaders — coverage only reaches half a pixel past the ink). The pad ring
   dominates small instances' fragment count: ~20–35% faster below 16px for _both_ algorithms, no visual change.
 - **Footprint via `fwidth`** instead of per-axis `length()`: −2 sqrt per fragment, bit-identical under the
