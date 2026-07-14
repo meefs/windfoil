@@ -32,8 +32,9 @@ Restore: thread `want_grad` through `integrate_piece/band/face` (return `grad` b
 
 > **Status:** built and measured — see [`../bench/ACCEL-NOTES.md`](../bench/ACCEL-NOTES.md). As an _exact_
 > in-shader fast path this loses (two independent designs were net-negative: register bloat + branch
-> divergence — see the "rejected: exact in-shader moments" notes there). But the per-band `S` data itself **shipped** as the minification guard's banded
-> ink profile (`src/bands.js` computes it, `MINIFICATION_GUARD` in `src/windfoil.wgsl` consumes it): used as
+> divergence — see the "rejected: exact in-shader moments" notes there). But the per-band `S` calculation
+> **shipped** as the minification guard's banded ink profile: `src/bands.js` normalizes it into a strip-hull
+> density and `MINIFICATION_GUARD` in `src/windfoil.wgsl` consumes it. It is used as
 > an _approximation_ for instances whose ink box is below ~3.7 device px on both axes rather than an exact path inside the gather —
 > ~30× performance improvement at a 2px em, bit-identical once a glyph's ink clears the gate (full-x-height lowercase from ~8px em; small-ink punctuation stays approximated higher — a Lato `.` to ~29.5px em). The sketch below is kept for the underlying math.
 

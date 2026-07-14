@@ -35,8 +35,9 @@ per-fragment moment cannot beat the plain gather inside one shader.
 ## Kept: banded-ink minification guard
 
 The moments failed by staying exact; the guard drops exactness precisely where it buys nothing — instances
-so small they're illegible. Each band's exact winding integral ∫∫ w dA (CPU, f64, one f32/band) plus its
-x-hull ride in the row table (`[start, count, area, xMin, xMax]`); a whole instance spanning ≤ `GUARD_PX`
+so small they're illegible. Each band's exact winding integral ∫∫ w dA is normalized over its x-hull and strip
+height once on the CPU, then that density and hull ride in the row table
+(`[start, count, density, xMin, xMax]`); a whole instance spanning ≤ `GUARD_PX`
 (3.7) device px renders from that profile: a few table taps, zero curve reads.
 
 It survives the rules above because the condition is per-instance-per-zoom (at 2–4px _every_ glyph takes it
@@ -57,7 +58,28 @@ not default.
 - **`BAND_SORT_MIN` 8 → 4**: early break pays on nearly any band (tiger −4–5%; sort is build-time only).
 - **`mono_root` pick via sign(a1)**: the derivative at the q-form root is −sign(a1)·√disc, so the branch
   pick needs no derivative eval (shape mid-zooms −2–4%).
+- **`mono_root` single division**: select the chosen root's numerator and denominator before dividing, instead
+  of evaluating both `qq/a2` and `c/qq`. Bit-exact; shape −2–5%, glyphs/tiger neutral-to-faster.
+- **Lazy control-point load**: an xy-monotone quadratic's control lies within its endpoint span, so hull tests
+  use only the endpoints and `q2` is loaded only for crossing pieces. This removes two hull min/max operations
+  and skips the control-point read for left/right/y-disjoint pieces; bit-exact and −2–3% across zooms.
+- **Paired band scales**: `bbox.y` already carries the band origin, so its duplicate header slot now carries
+  `bandH` beside `invH`. Band lookup keeps multiplying by `invH`; band edges multiply by `bandH` instead of
+  dividing. Same four header floats and buffers; multi-band glyph paths −2.4–2.7%, other cases neutral.
+- **Pre-normalized profile density**: the atlas divides each guard band's analytic integral by its strip-hull
+  area once. The shader now accumulates `density × yOverlap × xOverlap`, removing a division and extra
+  multiplies per visited band; another ~6% at the 4px glyph guard on top of paired band scales.
+- **Nonzero fold**: `min(abs(f), 1)` drops `clamp`'s redundant lower bound.
 - **`TARGET_PER_BAND` 6 → 10** (earlier round): ~8–19% at small/medium, ~15% smaller atlas.
+
+Together, the single-division, lazy-load, and fold trims measured 1.6–5.2% faster across nine paired guard/exact
+cases on Apple M2; every median improved and baseline/candidate output was byte-identical.
+
+The later band-scale + density pass keeps the same GPU memory and makes the shader 190 bytes smaller. Combined,
+it is about 8.5% faster at the 4px guard and ~2.5% faster at exact 8px multi-band glyphs; sparse/tiger cases are
+neutral. Across a 1–8192px glyph ladder, the algebraically equivalent band-edge multiplication and density
+normalization changed only isolated channels by one 8-bit code value (f32 evaluation/rounding). The independent
+`deno task validate` remains at mean 0.00009 against the box-filter reference.
 
 ## Rejected in round 2 (same bloat rule)
 
@@ -68,6 +90,16 @@ not default.
 - **`select`-flattened saturation tests in `mono_root`**: replacing the rising/falling early-out branch nest
   with two `select`-ed comparisons cost ~25% at 8px (both comparison pairs always evaluate, and the cheap
   early-outs become data dependencies) — in the hottest function, branches that skip work beat branchless.
+- **Fewer-select `mono_root` forms**: monotonicity can reduce the q-form to one select and one division; it was
+  2–9% faster on solve-heavy shapes, but changed isolated channels by one code value and did not prove neutral
+  glyph timings. The bit-exact three-select form made 8–16px glyphs ~1–2% slower. The current five-select,
+  one-division form therefore stays: fewer source operations did not mean a faster complete shader.
+- **Stored Bézier coefficients / endpoint-first records**: `[q1,q3,a1]` removes four scalar multiplies and four
+  add/subtracts per crossing but introduced one-code-value drift and no reproducible GPU win; byte-exact
+  `[q1,q3,q2]` was timing-neutral and made the CPU/Slug ABI larger.
+- **Factored integral, explicit FMA, row/curve structs, and shader-local band reciprocal**: either changed f32
+  association without a measured win, or only restated work Metal already strength-reduces. None survived the
+  readability + neutral-or-faster bar.
 - (Earlier: straight-piece fast path — `mono_root` already skips the sqrt for lines.)
 
 Pattern: anything added to the hot loop costs everywhere. Wins either remove work uniformly (pad, fwidth)

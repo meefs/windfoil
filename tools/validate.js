@@ -82,9 +82,9 @@ function buildScene(quads, evenodd, scale) {
     y0 = Math.min(y0, pieces[i + 1]); y1 = Math.max(y1, pieces[i + 1]);
   }
   const curveOut = [], rowOut = [];
-  const { rowBase, bandCount, y0: by0, invH } = bandPieces(pieces, y0, y1, curveOut, rowOut);
+  const { rowBase, bandCount, bandH, invH } = bandPieces(pieces, y0, y1, curveOut, rowOut);
   const rule = evenodd ? 1 : 0;
-  const instances = new Float32Array([0, 0, scale, rule, x0, y0, x1, y1, 1, 1, 1, 1, rowBase, bandCount, by0, invH]);
+  const instances = new Float32Array([0, 0, scale, rule, x0, y0, x1, y1, 1, 1, 1, 1, rowBase, bandCount, bandH, invH]);
   return { curves: new Float32Array(curveOut), rows: new Uint32Array(rowOut), instances };
 }
 

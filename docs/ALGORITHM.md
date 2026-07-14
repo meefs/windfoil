@@ -194,7 +194,7 @@ wobbling by ~`ULP(coordinate)·zoom` from the `curve − rc` evaluation (see §8
 | `integrate_piece` — the LEFT / INSIDE / RIGHT zone split                  | `src/windfoil.wgsl`                                                         |
 | `integrate_band` — sum `A_e` over one band's pieces, with the early break | `src/windfoil.wgsl`                                                         |
 | `integrate_face` — select + read the row bands a pixel touches (§6)       | `src/windfoil.wgsl`                                                         |
-| `profile_face` — the guard's banded ink profile, instances ≤ a few px (§8) | `src/windfoil.wgsl` (`MINIFICATION_GUARD`), `src/bands.js` (per-band areas) |
+| `profile_face` — the guard's banded ink profile, instances ≤ a few px (§8) | `src/windfoil.wgsl` (`MINIFICATION_GUARD`), `src/bands.js` (density) |
 | `fs` / `fold_shade` — normalize `F`, fold (nonzero / even-odd), style     | `src/windfoil.wgsl`                                                         |
 | instanced quad + per-glyph band table                                     | `src/windfoil.wgsl` (`vs`), [`src/layout.js`](../src/layout.js)             |
 
@@ -221,10 +221,11 @@ Honest weaknesses:
   than a heuristic, by design.
 - **Minification** — zoomed out, a footprint spans whole row bands so every curve integrates per pixel, costlier
   than Slug's dual-ray. Below the point where an instance is legible at all (whole glyph ≤ ~3.7 device px), the
-  shader switches to a **banded ink profile**: each band's exact winding integral and x-hull are precomputed at
-  atlas build and ride in the row table, so tiny glyphs render from a few table taps with no curve reads — their
+  shader switches to a **banded ink profile**: each band's exact winding integral is normalized over its strip
+  x-hull at atlas build and rides in the row table as a density, so tiny glyphs render from a few table taps
+  with no curve reads — their
   true average coverage, y-resolved by band. That caps the worst case (~30× at a 2px em) while everything at
-  legible sizes stays the exact integral, bit-for-bit. The remaining gap to Slug at legible small text (8–64px)
+  legible sizes stays on the exact integral. The remaining gap to Slug at legible small text (8–64px)
   is per-crossing arithmetic and is measured, with the ideas that did and didn't help, in
   [`../bench/README.md`](../bench/README.md) and [`../bench/ACCEL-NOTES.md`](../bench/ACCEL-NOTES.md).
 
@@ -249,8 +250,8 @@ existing work and may well overlap ideas we haven't traced. A rough, non-exhaust
 ## Changelog
 
 How the algorithm has evolved since the first draft — each change benchmarked in [`../bench/`](../bench/README.md)
-(long-form notes in [`ACCEL-NOTES.md`](../bench/ACCEL-NOTES.md)), with `deno task validate` bit-identical wherever
-the path is exact:
+(long-form notes in [`ACCEL-NOTES.md`](../bench/ACCEL-NOTES.md)); exact-path changes are bit-identical unless a
+floating-point rounding delta is stated:
 
 - **Initial algorithm** — the closed-form winding integral (§2–§4) gathered through row bands (§6), plus a crude
   sub-pixel guard (a hardcoded average ink fraction for glyphs smaller than a pixel).
@@ -258,13 +259,18 @@ the path is exact:
   far-curve path), and a footprint spans fewer of them (~8–19% at small/medium sizes, ~15% smaller atlas). Later,
   `BAND_SORT_MIN` 8 → 4 (the sorted early break pays on nearly any band).
 - **Banded-ink minification guard** — the row table grew from `[start, count]` pairs to
-  `[start, count, area, xMin, xMax]`: each band's exact winding integral (computed analytically at atlas build)
-  and its x-hull. An instance spanning ≤ `GUARD_PX` (≈3.7) device pixels renders from this profile — its true
-  per-band ink, no curve reads — replacing the hardcoded average and capping the minification worst case (~30×
-  at a 2px em) while legible sizes stay exact, bit-for-bit (§8).
+  `[start, count, density, xMin, xMax]`: each band's analytic winding integral is normalized over its strip
+  x-hull once at atlas build. An instance spanning ≤ `GUARD_PX` (≈3.7) device pixels renders from this profile —
+  its true per-band ink, no curve reads — replacing the hardcoded average and capping the minification worst case (~30×
+  at a 2px em) while legible sizes stay on the exact integral (§8).
+- **Reciprocal-pair reuse** — the band origin already lives in `bbox`, so the same header slot now carries
+  `bandH` beside `invH`: index lookup multiplies by `invH`, while edge reconstruction multiplies by `bandH`.
+  This adds no memory, removes fragment divisions, and changes only isolated 8-bit channels by one code value
+  through f32 evaluation/rounding.
 - **Fragment-cost trims** — the AA skirt pad tightened 2px → 1px (coverage reaches only half a pixel past the
   ink; the pad ring dominates small instances), the footprint moved to `fwidth` (no sqrt), and `mono_root` picks
-  its root branch by the sign of `a1` instead of evaluating the derivative.
+  its root branch by the sign of `a1` and divides only the selected root. Endpoint hulls defer control-point
+  reads until a crossing survives, and the nonzero fold omits its redundant lower clamp bound.
 - **Simplification pass** — the shader deduplicated into named helpers (`fold_shade`, `profile_face`, the band
   mapping/overlap helpers, `ROW_*` layout constants) and dead guards removed — verified byte-identical renders
   and baseline-identical timings.

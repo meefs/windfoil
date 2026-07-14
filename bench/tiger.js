@@ -40,7 +40,7 @@ export async function buildTigerScene({ emWorld, extent, color = null }) {
   const scale = emWorld / span; // drawing units → world units (whole drawing ≈ emWorld world units)
 
   const wCurves = [], wRows = [], sCurves = [], sRows = [];
-  const shapes = []; // { bbox, color, w:{rowBase,bandCount,y0,invH}, s:{...} }
+  const shapes = []; // { bbox, color, w:{rowBase,bandCount,bandH,invH}, s:{...} }
   let rawCurves = 0, monoPieces = 0;
 
   for (const shape of doc.data) {
@@ -92,7 +92,7 @@ export async function buildTigerScene({ emWorld, extent, color = null }) {
         const bb = sh.bbox;
         w.push(
           gx, gy, scale, 0, bb[0], bb[1], bb[2], bb[3], r, g, b, 1,
-          sh.w.rowBase, sh.w.bandCount, sh.w.y0, sh.w.invH,
+          sh.w.rowBase, sh.w.bandCount, sh.w.bandH, sh.w.invH,
         );
         s.push(
           gx, gy, scale, 0, bb[0], bb[1], bb[2], bb[3], r, g, b, 1,

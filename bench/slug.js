@@ -51,11 +51,11 @@ export function bandSlugShape(quads, bbox, curves, rows) {
   // Horizontal bands: plain quads, filed by y over [y0, y1].
   const h = bandPieces(quads, y0, y1, curves, rows, SLUG_TARGET_PER_BAND);
   // Vertical bands: quads rotated to (y, −x), filed by the rotated y (= −x) over [−x1, −x0]. The returned
-  // header's y0/invH are therefore the rotated y-origin (−hiX) and bands-per-x-unit.
+  // band origin is therefore −hiX, while invH is bands per x-unit.
   const v = bandPieces(rotateQuads(quads), -x1, -x0, curves, rows, SLUG_TARGET_PER_BAND);
   return {
-    hRowBase: h.rowBase, hBandCount: h.bandCount, y0: h.y0, invH: h.invH,
-    vRowBase: v.rowBase, vBandCount: v.bandCount, rotY0: v.y0, invW: v.invH,
+    hRowBase: h.rowBase, hBandCount: h.bandCount, y0, invH: h.invH,
+    vRowBase: v.rowBase, vBandCount: v.bandCount, rotY0: -x1, invW: v.invH,
     bbox,
   };
 }

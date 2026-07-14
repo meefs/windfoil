@@ -83,7 +83,7 @@ function bandWindingArea(pieces, bucket, x0, b0, b1) {
   return area;
 }
 
-// Bit-pun an f32 into a u32 so the area rides in the (integer) row table.
+// Bit-pun an f32 into a u32 so profile data rides in the (integer) row table.
 const punBuf = new DataView(new ArrayBuffer(4));
 function f32bits(v) {
   punBuf.setFloat32(0, Math.fround(v), true);
@@ -92,13 +92,14 @@ function f32bits(v) {
 
 /**
  * File a shape's monotone `pieces` (flat 6-float runs) into row bands over [y0, y1], appending the
- * band-duplicated pieces to `curveOut` and each band's [start, count, areaBits, xMinBits, xMaxBits] to
+ * band-duplicated pieces to `curveOut` and each band's [start, count, densityBits, xMinBits, xMaxBits] to
  * `rowOut`. Beyond start/count, each band carries three f32s (bit-punned into the integer table):
- *   • area — the band strip's EXACT winding integral ∫∫_strip w dA, for the shader's minification guard
- *     (tiny glyphs render from this banded ink profile instead of gathering curves).
- *   • xMin/xMax — the hull of the band's pieces in x; the guard spreads each band's area over this hull, so
- *     approximated glyphs keep per-band letterform hints instead of smearing across the whole ink box.
- * Returns the band header { rowBase, bandCount, y0, invH } the shader reads (rowBase in row-quintuple units).
+ *   • density — the band's exact winding integral divided by its height and x-hull width; the minification
+ *     guard integrates this constant density over the pixel overlap instead of gathering curves.
+ *   • xMin/xMax — the hull used to normalize and clip that density, preserving per-band letterform hints
+ *     instead of smearing each strip across the whole ink box.
+ * Returns { rowBase, bandCount, bandH, invH }; callers already know y0, so the shader header uses its slot for
+ * bandH and turns repeated edge divisions into multiplications (rowBase is in row-quintuple units).
  */
 export function bandPieces(pieces, y0, y1, curveOut, rowOut, targetPerBand = TARGET_PER_BAND) {
   const n = pieces.length / 6;
@@ -118,6 +119,8 @@ export function bandPieces(pieces, y0, y1, curveOut, rowOut, targetPerBand = TAR
 
   const rowBase = rowOut.length / 5;
   const bandH = R > 1 ? (y1 - y0) / R : y1 - y0;
+  // Pair the uploaded f32 scales after rounding, so index and edge math share the same band grid.
+  const headerBandH = R > 1 ? Math.fround(1 / Math.fround(invH)) : Math.fround(bandH);
   const xMax = (k) => Math.max(pieces[k * 6], pieces[k * 6 + 2], pieces[k * 6 + 4]);
   const xMin = (k) => Math.min(pieces[k * 6], pieces[k * 6 + 2], pieces[k * 6 + 4]);
   for (let b = 0; b < R; b++) {
@@ -132,9 +135,10 @@ export function bandPieces(pieces, y0, y1, curveOut, rowOut, targetPerBand = TAR
       bxMax = Math.max(bxMax, xMax(k));
     }
     const area = n ? bandWindingArea(pieces, bucket, xLeft, y0 + b * bandH, y0 + (b + 1) * bandH) : 0;
-    rowOut.push(start, bucket.length, f32bits(area), f32bits(bxMin), f32bits(bxMax));
+    const density = area / Math.max(headerBandH * (bxMax - bxMin), 1e-30);
+    rowOut.push(start, bucket.length, f32bits(density), f32bits(bxMin), f32bits(bxMax));
   }
-  return { rowBase, bandCount: R, y0, invH };
+  return { rowBase, bandCount: R, bandH: headerBandH, invH };
 }
 
 /**

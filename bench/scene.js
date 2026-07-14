@@ -72,7 +72,7 @@ export function buildScene(font, wTable, sTable, { emWorld, extent, color = INK 
             pen, baselineY, scale, rule,
             wg.bbox[0], wg.bbox[1], wg.bbox[2], wg.bbox[3],
             r, g, b, a,
-            wg.rowBase, wg.bandCount, wg.y0, wg.invH,
+            wg.rowBase, wg.bandCount, wg.bandH, wg.invH,
           );
           // slug instance (20 floats) — same place/bbox/color, plus both band headers.
           s.push(

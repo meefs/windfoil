@@ -38,7 +38,7 @@ export function layoutLine(out, text, table, font, { x, baselineY, fontSizePx, c
         pen, baselineY, scale, rule, // place: origin px, units→px, fill rule
         gl.bbox[0], gl.bbox[1], gl.bbox[2], gl.bbox[3], // ink box (font units)
         r, g, b, a, // color
-        gl.rowBase, gl.bandCount, gl.y0, gl.invH, // row-band table + y-origin / bands-per-unit
+        gl.rowBase, gl.bandCount, gl.bandH, gl.invH, // row-band table + band height / bands per unit
       );
     }
     pen += advanceOf(font, ch) * scale; // advance for glyphs and spaces alike

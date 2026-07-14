@@ -122,7 +122,7 @@ export function buildHairlineScene({ emWorld, extent, color = INK }) {
     for (let gx = start; gx <= extent; gx += spacing) {
       w.push(
         gx, gy, scale, 0, bbox[0], bbox[1], bbox[2], bbox[3], r, g, b, a,
-        wH.rowBase, wH.bandCount, wH.y0, wH.invH,
+        wH.rowBase, wH.bandCount, wH.bandH, wH.invH,
       );
       s.push(
         gx, gy, scale, 0, bbox[0], bbox[1], bbox[2], bbox[3], r, g, b, a,

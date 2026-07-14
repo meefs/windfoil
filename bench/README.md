@@ -207,20 +207,24 @@ range (banded-ink guard, ~5× faster), and **magnification** on all three scenes
 
 ## Applied optimizations
 
-Core-algorithm changes tuned with this harness (all coverage-preserving where exactness matters —
-`deno task validate` is bit-identical throughout; long-form engineering log in
-[`ACCEL-NOTES.md`](ACCEL-NOTES.md)):
+Core-algorithm changes tuned with this harness (mathematically coverage-preserving where exactness matters;
+the few f32 readback deltas are noted below; long-form engineering log in [`ACCEL-NOTES.md`](ACCEL-NOTES.md)):
 
 - **`TARGET_PER_BAND` 6 → 10** (`src/bands.js`). Coarser bands cost windfoil almost nothing per extra piece
   (early-break + clamp/subtract far curves, no solve) while a footprint spans fewer of them — ~8–19% faster at
   small/medium sizes, ~15% smaller atlas. Windfoil-specific, so the benchmark pins Slug's own bands at 6 (via
   `bandPieces`'s optional argument) to keep the comparison fair.
 - **Banded-ink minification guard** (`MINIFICATION_GUARD` / `GUARD_PX`, `src/windfoil.wgsl`): each band's
-  exact winding integral + x-hull ride in the row table ([start, count, area, xMin, xMax] per band); an
+  analytic winding integral is pre-normalized over its strip x-hull in the row table
+  ([start, count, density, xMin, xMax] per band); an
   instance whose _ink box_ spans ≤ 3.7 device px on both axes renders from that profile with no curve reads.
   Glyphs @2px **45 → 1.7 ms**, @4px **11.8 → 0.44 ms** (windfoil flips from ~5× slower than Slug to ~5× faster);
   ≥ 8px em bit-identical for full-x-height glyphs, but small-ink punctuation is approximated higher (Lato `.` to
   ~29.5px em, `,` ~14.6px, `-` ~15.0px) since the gate is the ink box, not the em.
+- **Paired band scales + normalized density**: the four-float header stores `bandH` beside `invH` (the band
+  origin was already in `bbox`), turning edge divisions into multiplications without adding memory. Computing
+  profile density once on the CPU also removes one divide and extra multiplies per visited guard band. Together
+  they improve the 4px guard by ~8.5% and exact 8px multi-band glyphs by ~2.5%; sparse/tiger cases are neutral.
 - **0.625px kernel skirt**: windfoil uses 0.5px box support plus 0.125px derivative slack per axis; Slug mirrors
   it for fair benchmark bounds, and `KERNEL_SUPPORT_PX` is the per-axis hook for wider kernels.
 - **Footprint via `fwidth`** instead of per-axis `length()`: −2 sqrt per fragment, bit-identical under the
@@ -228,10 +232,23 @@ Core-algorithm changes tuned with this harness (all coverage-preserving where ex
 - **`BAND_SORT_MIN` 8 → 4**: the sorted early-break pays for itself on nearly any band (tiger −4–5%).
 - **`mono_root` branch pick via sign(a1)** instead of evaluating the derivative at the root (they're
   algebraically equal picks): shape mid-zooms −2–4%.
+- **`mono_root` single division**: select the chosen root's numerator/denominator before dividing instead of
+  evaluating both roots. Bit-exact; shape −2–5%, glyphs/tiger neutral-to-faster.
+- **Lazy control-point load**: endpoint hulls suffice for xy-monotone pieces, so far-left/right/y-disjoint
+  pieces skip the control-point read and two hull min/max operations. Bit-exact; −2–3% across zooms.
+- **Nonzero fold trim**: `min(abs(f), 1)` removes `clamp`'s redundant lower bound.
 
-Also measured and rejected (see ACCEL-NOTES): band-level x-hull skips in the exact gather and
-flat-interpolated instance data — both slowed the hot path more than they saved. Earlier rejects (straight-piece
-fast path, the two moment/backdrop accelerations below) still stand.
+The earlier single-division/lazy-load/fold pass measured 1.6–5.2% faster across nine paired guard/exact cases
+on Apple M2, with byte-identical baseline/candidate output in every case.
+
+The later band-scale pass is mathematically identical but changes evaluation from division/addition to
+multiplication/addition. On a 1–8192px glyph ladder, only isolated channels moved by one 8-bit code value due to
+f32 evaluation/rounding; the independent validation score remains mean 0.00009.
+
+Also measured and rejected (see ACCEL-NOTES): fewer-select root forms, stored Bézier coefficients, factored
+integrals, row/curve structs, band-level hull skips, and flat-interpolated instance data. They either slowed a
+real case, changed rounding without a broad win, or made the full source less clear. Earlier rejects
+(straight-piece fast path and the two moment/backdrop accelerations below) still stand.
 
 ## Rejected: band-moments acceleration (two attempts, both net-negative)
 

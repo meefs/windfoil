@@ -37,8 +37,8 @@ const SORT_MIN : u32 = 4u;
 // The curve atlas: three consecutive vec2 per whole quadratic (endpoints + control). Horizontal-band curves
 // are stored plain (x, y); vertical-band curves are stored rotated 90° as (y, −x) so one gather serves both.
 @group(0) @binding(2) var<storage, read> curves : array<vec2<f32>>;
-// Row-band table: a flat [start, count, area, xMin, xMax] quintuple per band, indexing into `curves`
-// (piece units). The three bit-punned f32s are windfoil-guard data this shader skips over.
+// Row-band table: a flat [start, count, density, xMin, xMax] quintuple per band, indexing into `curves`
+// (piece units). The three bit-punned f32s are Windfoil guard data this shader skips over.
 @group(0) @binding(3) var<storage, read> rows : array<u32>;
 
 struct VsOut {
@@ -142,7 +142,7 @@ fn gather_ray(rc : vec2<f32>, band : vec4<f32>, invDiam : f32, half : f32) -> ve
   if (invH > 0.0 && R > 1u) {
     bi = u32(clamp(floor((rc.y - y0) * invH), 0.0, f32(R) - 1.0));
   }
-  let rIdx = (rowBase + bi) * 5u; // rows are [start, count, area, xMin, xMax] — the f32s are windfoil-only
+  let rIdx = (rowBase + bi) * 5u; // rows are [start, count, density, xMin, xMax] — f32s are Windfoil-only
   let start = rows[rIdx];
   let count = rows[rIdx + 1u];
 
