@@ -180,37 +180,28 @@ function buildScene(quads, evenodd, scale) {
   return { curves: new Float32Array(curveOut), rows: new Uint32Array(rowOut), instances };
 }
 
-// ss > 1 is the "exact mode" knob: render the shader at ss× resolution and box-average back down to S×S.
-// The winding fold then applies per SUB-pixel (whose footprint is 1/ss of a pixel), so the documented fold
-// failures shrink ~1/ss and the result converges to the exact box filter as ss grows — at ss× the cost.
-// Common (fold-exact) shapes are unchanged apart from less 8-bit readback noise. Not a shader mode — the
-// fold itself stays lossy; this just shrinks what it loses.
-//
-// Exact mode also specializes the pipeline with MINIFICATION_GUARD off (a WGSL override constant, set via
-// the standard pipeline `constants` map), so every sub-pixel is the true integral: the guard's ink-profile
-// approximation must never stand in for an "exact" measurement. (It gates on the whole ink box shrinking
-// below ~3.7 device px, so it can't fire on this suite's ~90px shapes — and supersampling only grows the
-// device-space ink box — but tiny shapes added later shouldn't silently leak the approximation into
-// exact-mode numbers.)
-export async function ourCoverage(device, quads, evenodd, ss = 1) {
-  const { curves, rows, instances } = buildScene(quads, evenodd, ss);
-  const W = S * ss;
-  const constants = ss > 1 ? { MINIFICATION_GUARD: 0 } : undefined; // 0 = false
+// exact = true is the "exact mode" knob: specialize the pipeline with the shader's EXACT_MODE override on
+// (set via the standard pipeline `constants` map, like MINIFICATION_GUARD), replacing the scalar winding
+// fold with in-shader sampling of the TRUE fill rule on an EXACT_GRID×EXACT_GRID grid per pixel
+// (windfoil.wgsl exact_coverage — it also bypasses the minification guard). Correct on the winding-fold
+// failure cases; ordinary AA edges pick up the grid's sub-sample quantisation (~1/64 coverage steps at the
+// default 8×8), so it is an offline/print correctness mode, not a quality upgrade for common fills. The
+// override is compiled out of the normal pipeline, so the fast path costs nothing when it is off.
+export async function ourCoverage(device, quads, evenodd, exact = false) {
+  const { curves, rows, instances } = buildScene(quads, evenodd, 1);
+  const constants = exact ? { EXACT_MODE: 1 } : undefined;
   const rgba = await renderToRGBA({
-    device, constants, width: W, height: W, background: [0, 0, 0, 1], curves, rows, instances, instanceCount: 1,
+    device, constants, width: S, height: S, background: [0, 0, 0, 1], curves, rows, instances, instanceCount: 1,
   });
   const out = new Float64Array(S * S);
-  for (let y = 0; y < W; y++) {
-    for (let x = 0; x < W; x++) out[((y / ss) | 0) * S + ((x / ss) | 0)] += rgba[(y * W + x) * 4] / 255;
-  }
-  for (let i = 0; i < out.length; i++) out[i] /= ss * ss;
+  for (let i = 0; i < out.length; i++) out[i] = rgba[i * 4] / 255;
   return out;
 }
 
 // ── 2. Slug (bench/slug.wgsl) — the second analytic AA model, on the same GPU device ───────────────────
 // Whole quads into Slug's dual band sets (bench/slug.js); the instance carries both band headers (20 floats).
-// Same 4-binding pipeline as ours, different shader. Always rendered at 1× — like the canvas and the box
-// filter, it is a reference, so exact mode's supersampling applies only to ours.
+// Same 4-binding pipeline as ours, different shader. Like the canvas and the box filter it is a reference,
+// so exact mode applies only to ours.
 function buildSlugScene(quads, evenodd) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (let i = 0; i < quads.length; i += 2) {
@@ -371,12 +362,12 @@ export const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/
  * @param {object} o.font              a parsed font (see font.js loadFont/parseFont)
  * @param {Function} o.createContext2D (w, h) → a 2D canvas context in the host environment
  * @param {GPUDevice} o.device         a shared WebGPU device (see gpu.js requestDevice)
- * @param {number} [o.supersample]     render ours at this factor and box-average down (see ourCoverage);
- *                                     the canvas and box references stay at 1× — they're the yardstick
+ * @param {boolean} [o.exact]          render ours with the shader's EXACT_MODE override (see ourCoverage);
+ *                                     slug, canvas and box are unaffected — they're the yardstick
  */
-export async function* validateShapes({ font, createContext2D, device, supersample = 1 }) {
+export async function* validateShapes({ font, createContext2D, device, exact = false }) {
   for (const { label, quads, evenodd = false, segments, fold = false } of buildShapes(font)) {
-    const ours = await ourCoverage(device, quads, evenodd, supersample);
+    const ours = await ourCoverage(device, quads, evenodd, exact);
     const slug = await slugCoverage(device, quads, evenodd);
     const canvas = canvasCoverage(createContext2D, quads, evenodd, segments);
     const box = boxCoverage(quads, evenodd);

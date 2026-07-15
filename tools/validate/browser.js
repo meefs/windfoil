@@ -63,15 +63,14 @@ function shapePanel({ label, fold, ours, slug, canvas, box, oursVsBox: ob, canva
   return panel;
 }
 
-// "exact mode" (curiosity knob, see harness ourCoverage): ?exact (16×) or ?ss=N — the shader renders at
-// N× and box-averages down, so the winding fold's documented failures shrink ~1/N.
+// Exact mode (see harness ourCoverage): ?exact renders ours with the shader's EXACT_MODE override —
+// in-shader true-fill sampling instead of the winding fold.
 const params = new URLSearchParams(location.search);
-const ssParam = Number(params.get('ss'));
-const supersample = params.has('exact') && params.get('exact') !== 'false' ? 16 : Math.max(1, ssParam || 1);
+const exact = params.has('exact') && params.get('exact') !== 'false';
 
 $('#params').textContent =
   `${S}px cell · box filter = ${F}×${F} zero-AA point-sample · canvas = this browser's canvas2d` +
-  `${supersample > 1 ? ` · ours ×${supersample} supersampled (fold per sub-pixel)` : ''}`;
+  `${exact ? ' · ours = EXACT_MODE (8×8 true-fill sampling, no fold)' : ''}`;
 
 try {
   const device = await requestDevice();
@@ -91,7 +90,7 @@ try {
     a.n++; a.obMean += ob.mean; a.cbMean += cb.mean; a.lbMean += lb.mean;
     a.obMax = Math.max(a.obMax, ob.max); a.cbMax = Math.max(a.cbMax, cb.max); a.lbMax = Math.max(a.lbMax, lb.max);
   };
-  for await (const result of validateShapes({ font, createContext2D, device, supersample })) {
+  for await (const result of validateShapes({ font, createContext2D, device, exact })) {
     const { label, fold, oursVsBox: ob, canvasVsBox: cb, slugVsBox: lb } = result;
     add(all, ob, cb, lb);
     if (!fold) add(common, ob, cb, lb);

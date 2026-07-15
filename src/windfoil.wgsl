@@ -33,6 +33,16 @@ const ROW_XMAX : u32 = 4u;
 override MINIFICATION_GUARD : bool = true;
 const GUARD_PX = 3.7;
 
+// Opt-in EXACT fill for offline/static renders: sample the TRUE fill rule on an EXACT_GRID×EXACT_GRID grid
+// inside the pixel footprint and average — no scalar winding fold, so it is correct on the fold's failure
+// cases (opposite-sign cancellation, |w|>1, 3+ winding levels, non-adjacent even-odd parity; ALGORITHM.md
+// §4), at EXACT_GRID² winding evaluations per pixel. Ordinary AA edges pick up the grid's sub-sample
+// quantisation (→ 0 as the grid grows), so this is a correctness mode, not a quality upgrade for common
+// fills. Pipeline-overridable and OFF by default: the exact path is compiled out of the interactive
+// pipeline entirely (set via the pipeline `constants` map, like MINIFICATION_GUARD).
+override EXACT_MODE : bool = false;
+override EXACT_GRID : u32 = 8u;
+
 // Kernel support plus 0.125px derivative slack; adjust support per axis for other kernels.
 const KERNEL_SUPPORT_PX = vec2<f32>(0.5);
 const KERNEL_SKIRT_PX = KERNEL_SUPPORT_PX + vec2<f32>(0.125);
@@ -289,12 +299,75 @@ fn profile_face(band : vec4<f32>, bbox : vec4<f32>, rc : vec2<f32>, s : vec2<f32
   return ink;
 }
 
+// ── exact (opt-in) path — see the EXACT_MODE override above ─────────────────────────────────────────────
+// Signed winding W and crossing count K of a +x ray from the rc-RELATIVE point `pr`, by ray-casting the
+// pieces of the single row band containing its y (the same rc-relative arithmetic as integrate_band, so
+// deep-zoom precision is preserved). This is the exact per-sample fill test the supersampled path averages,
+// instead of folding one scalar.
+fn winding_at(band : vec4<f32>, y0 : f32, rc : vec2<f32>, pr : vec2<f32>) -> vec2<i32> {
+  let rowBase = u32(band.x);
+  let R = u32(band.y);
+  let invH = band.w;
+  var ri : u32 = 0u;
+  if (R > 1u) { ri = band_index(pr.y + rc.y - y0, invH, R); }
+  let rIdx = (rowBase + ri) * ROW_STRIDE;
+  let start = rows[rIdx];
+  let count = rows[rIdx + 1u];
+  var W : i32 = 0;
+  var K : i32 = 0;
+  for (var i : u32 = 0u; i < count; i = i + 1u) {
+    let base = (start + i) * 3u;
+    let q1 = curves[base] - rc;
+    let q3 = curves[base + 2u] - rc;
+    let rising = q3.y > q1.y;
+    let ylo = min(q1.y, q3.y);
+    let yhi = max(q1.y, q3.y);
+    // Half-open in y: a join between adjacent pieces counts once, an extremum apex not at all (0 ≡ 2
+    // crossings), and horizontal pieces (ylo == yhi) never.
+    if (pr.y < ylo || pr.y >= yhi) { continue; }
+    let q2 = curves[base + 1u] - rc;
+    let a2 = q1 - 2.0 * q2 + q3;
+    let a1 = 2.0 * (q2 - q1);
+    let t = mono_root(a2.y, a1.y, q1.y, q3.y, pr.y, rising);
+    let x = (a2.x * t + a1.x) * t + q1.x;
+    if (x > pr.x) {
+      K = K + 1;
+      W = W + select(-1, 1, rising);   // a monotone piece's crossing sign is its overall y direction
+    }
+  }
+  return vec2<i32>(W, K);
+}
+
+// Exact box-filter coverage: the fraction of an EXACT_GRID×EXACT_GRID sub-sample grid over the pixel
+// footprint whose true winding satisfies the fill rule. No fold — correct wherever the scalar fold is not.
+fn exact_coverage(band : vec4<f32>, y0 : f32, fillRule : f32, rc : vec2<f32>, s : vec2<f32>) -> f32 {
+  let inv = 1.0 / f32(EXACT_GRID);
+  let evenodd = fillRule > 0.5;
+  var inside : u32 = 0u;
+  for (var j : u32 = 0u; j < EXACT_GRID; j = j + 1u) {
+    for (var i : u32 = 0u; i < EXACT_GRID; i = i + 1u) {
+      let off = (vec2<f32>(f32(i), f32(j)) + 0.5) * inv - 0.5;   // centred sub-sample in (−0.5, 0.5)
+      let wk = winding_at(band, y0, rc, off * s);
+      let hit = select(wk.x != 0, (wk.y & 1) == 1, evenodd);     // nonzero: W ≠ 0 · even-odd: odd crossings
+      inside = inside + select(0u, 1u, hit);
+    }
+  }
+  return f32(inside) / f32(EXACT_GRID * EXACT_GRID);
+}
+
 @fragment
 fn fs(in : VsOut) -> @location(0) vec4<f32> {
   let I = instances[in.inst];
   let rc = in.rc;
   // units_per_pixel from the screen-space gradients — the device pixel's preimage under scale/translation.
   let s = max(fwidth(rc), vec2<f32>(1e-9));
+
+  // Compiled out unless the pipeline sets EXACT_MODE: supersample the true fill rule, skipping both the
+  // fold and the minification guard.
+  if (EXACT_MODE) {
+    let cov = exact_coverage(I.band, I.bbox.y, I.place.w, rc, s);
+    return shade(I.color, style_coverage(cov, U.style.x, U.style.y));
+  }
 
   if (MINIFICATION_GUARD && all(s * GUARD_PX >= I.bbox.zw - I.bbox.xy)) {
     return fold_shade(profile_face(I.band, I.bbox, rc, s) / (s.x * s.y), I.place.w, I.color);

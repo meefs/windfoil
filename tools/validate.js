@@ -15,15 +15,14 @@ const font = await loadFont(new URL('../assets/Lato-Regular.ttf', import.meta.ur
 const device = await requestDevice();
 const createContext2D = (w, h) => createCanvas(w, h).getContext('2d');
 
-// "exact mode" (curiosity knob, see ourCoverage): `deno task validate --exact` (16×) or `--ss=N`.
-// The shader renders at N× and box-averages down, so the fold's documented failures shrink ~1/N.
-const ssArg = Deno.args.find((a) => a.startsWith('--ss='))?.slice(5);
-const supersample = Deno.args.includes('--exact') ? 16 : Math.max(1, Number(ssArg) || 1);
+// Exact mode (see harness ourCoverage): `deno task validate --exact` renders ours with the shader's
+// EXACT_MODE override — in-shader true-fill sampling instead of the winding fold.
+const exact = Deno.args.includes('--exact');
 
 // All renderers measured against the same independent box-filter reference: mean and worst-pixel |Δ|.
 console.log(
   `validate · ${S}px cell · box filter = ${F}×${F} zero-AA point-sample · skia = @napi-rs/canvas · slug = bench/slug.wgsl` +
-    `${supersample > 1 ? ` · ours ×${supersample} supersampled (fold per sub-pixel)` : ''}\n`,
+    `${exact ? ' · ours = EXACT_MODE (8×8 true-fill sampling, no fold)' : ''}\n`,
 );
 console.log(
   `${'shape'.padEnd(24)}   ${'ours vs box'.padStart(17)}   ${'skia vs box'.padStart(17)}   ${'slug vs box'.padStart(17)}`,
@@ -46,7 +45,7 @@ const add = (a, ob, sb, lb) => {
 const panels = [];
 for await (
   const { label, fold, ours, slug, canvas: skia, box, oursVsBox: ob, canvasVsBox: sb, slugVsBox: lb }
-    of validateShapes({ font, createContext2D, device, supersample })
+    of validateShapes({ font, createContext2D, device, exact })
 ) {
   panels.push({ label, ours, slug, skia, box });
   add(all, ob, sb, lb);
