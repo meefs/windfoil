@@ -79,7 +79,8 @@ The later band-scale + density pass keeps the same GPU memory and makes the shad
 it is about 8.5% faster at the 4px guard and ~2.5% faster at exact 8px multi-band glyphs; sparse/tiger cases are
 neutral. Across a 1–8192px glyph ladder, the algebraically equivalent band-edge multiplication and density
 normalization changed only isolated channels by one 8-bit code value (f32 evaluation/rounding). The independent
-`deno task validate` remains at mean 0.00009 against the box-filter reference.
+`deno task validate` was unchanged at mean 0.00009 against the box-filter reference (the 7-shape suite of the
+time; the expanded 44-shape suite now reports common-shape mean 0.00012).
 
 ## Rejected in round 2 (same bloat rule)
 

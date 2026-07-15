@@ -135,12 +135,13 @@ is the documented §4/§8 limit, not error), plus every lowercase letter a–z o
 worst-pixel `|Δcoverage|` on this machine (representative rows):
 
 ```
-shape                     ours vs box        skia vs box
-                          mean      max      mean      max
-rotated square 30°        0.00003   0.004    0.00079   0.092
-circle r=44 (64 arcs)     0.00003   0.006    0.00073   0.177
-glyph 'o'                 0.00006   0.014    0.00231   0.340
-star {5/2} even-odd       0.00017   0.100    0.00111   0.090
+shape                    ours vs box       skia vs box       slug vs box
+                         mean      max     mean      max     mean      max
+rotated square 30°       0.00003   0.004   0.00079   0.092   0.00069   0.073
+circle r=44 (64 arcs)    0.00003   0.006   0.00073   0.177   0.00036   0.060
+glyph 'o'                0.00006   0.014   0.00231   0.340   0.00079   0.090
+star {5/2} even-odd      0.00017   0.100   0.00111   0.090   0.00094   0.093
+common shapes (37)       0.00012   0.100   0.00163   0.360   0.00106   0.324
 ```
 
 The same harness ([`../tools/validate/harness.js`](../tools/validate/harness.js)) also runs in a browser
@@ -157,8 +158,13 @@ to 8-bit and f32 rounding. The one real deviation is the winding fold (§4), whi
 
 On ordinary fills the shader matches the point-sampled box filter to within its own sampling noise
 (max ≲ 0.02). Skia sits further off because it flattens curves to line segments (its circle deviation shrinks
-as arc count rises; the test uses 64 arcs) and its edge AA is its own model. The self-intersecting star is the
-documented §4 limit: the winding fold deviates by ~0.1 at the crossings, comparable to Skia there.
+as arc count rises; the test uses 64 arcs) and its edge AA is its own model. Slug lands between the two
+(common-shape mean 0.00106): like ours it is exact on axis-aligned edges and handles curvature analytically,
+but its point-sampled dual rays bead on sub-pixel strokes (the 0.75px spoke wheel is its worst common row),
+and it reproduces the † fold deviations almost exactly alongside ours — those limits belong to scalar
+per-pixel coverage estimation as a class, which Skia's full coverage rasterizer resolves. The
+self-intersecting star is the documented §4 limit: the winding fold deviates by ~0.1 at the crossings,
+comparable to Skia there.
 
 ---
 

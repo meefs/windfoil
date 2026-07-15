@@ -104,8 +104,11 @@ not a precision issue (f64 reproduced the fringe), not inherent to Slug (the ref
 clean) — purely this port's adaptation. `slug.wgsl` now folds to the shared extremum root `b/a` when
 `d == 0`, and the replica confirms bit-parity with the reference forms over the worst rim region.
 
-`--check` confirms it: windfoil (validated against Skia — `docs/ALGORITHM.md §5`) and this Slug agree to mean
-**|Δrgb| ≈ 0.0014** on text and **≈ 0.0016** on the tiger — two different exact-ish AA models nearly coinciding.
+`--check` confirms it: windfoil and this Slug agree to mean **|Δrgb| ≈ 0.0014** on text and **≈ 0.0016** on
+the tiger. Read that as a parity gate for the port (two analytic models nearly coinciding on real scenes),
+not an exactness score — for per-renderer error against ground truth, `deno task validate` measures Slug
+directly alongside windfoil and Skia on one corpus and box-filter reference (`docs/ALGORITHM.md §5`):
+common-shape mean |Δcoverage| **0.00012 windfoil · 0.00106 Slug · 0.00163 Skia**.
 
 **Where the two models genuinely disagree — sub-pixel strokes.** The tiger's whiskers at a 512px drawing
 height are ~0.2–0.5px wide. Against a 8×8-supersampled ground truth of that region, windfoil's exact area
@@ -243,7 +246,8 @@ on Apple M2, with byte-identical baseline/candidate output in every case.
 
 The later band-scale pass is mathematically identical but changes evaluation from division/addition to
 multiplication/addition. On a 1–8192px glyph ladder, only isolated channels moved by one 8-bit code value due to
-f32 evaluation/rounding; the independent validation score remains mean 0.00009.
+f32 evaluation/rounding; the independent validation score was unchanged (mean 0.00009 on the 7-shape suite of
+the time; the expanded 44-shape suite now reports common-shape mean 0.00012 — see `docs/ALGORITHM.md §5`).
 
 Also measured and rejected (see ACCEL-NOTES): fewer-select root forms, stored Bézier coefficients, factored
 integrals, row/curve structs, band-level hull skips, and flat-interpolated instance data. They either slowed a
